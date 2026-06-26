@@ -1,0 +1,107 @@
+{
+  description = "KaiT2en — Apple T2 Mac kernel modules and userspace apps, packaged for Nix";
+
+  inputs = {
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+
+    flake-parts.url = "github:hercules-ci/flake-parts";
+    flake-parts.inputs.nixpkgs-lib.follows = "nixpkgs";
+
+    flake-compat.url = "https://git.lix.systems/lix-project/flake-compat/archive/main.tar.gz";
+    flake-compat.flake = false;
+  };
+
+  outputs =
+    inputs@{ flake-parts, nixpkgs, ... }:
+    flake-parts.lib.mkFlake { inherit inputs; } {
+      # T2 Macs are Intel x86_64 hardware; nothing here targets other systems.
+      systems = [ "x86_64-linux" ];
+
+      # System-independent outputs.
+      flake = {
+        # `kernelModulesFor kernel` builds every KaiT2en module against an
+        # arbitrary kernel — this is what NixOS' boot.extraModulePackages wants,
+        # e.g. `config.boot.kernelPackages.kernel`. Exposed per-system as
+        # `lib.<system>.kernelModulesFor`.
+        lib = nixpkgs.lib.genAttrs [ "x86_64-linux" ] (
+          system:
+          let
+            pkgs = import nixpkgs { inherit system; };
+          in
+          {
+            kernelModulesFor = kernel: pkgs.callPackage ./modules { inherit kernel; };
+          }
+        );
+
+        # NixOS modules for the userspace apps' system integration (systemd
+        # units, udev rules, group memberships). Each module defaults its
+        # package to `pkgs.callPackage ./apps/<name>/package.nix {}`; add this
+        # flake's overlay (or set `services.<app>.package`) if you want a custom
+        # build. `default` imports all three; the per-app modules are exposed
+        # too.
+        nixosModules = {
+          default = ./nix/modules;
+          kait2en-kernel = ./nix/modules/kait2en-kernel;
+          brcm-firmware = ./nix/modules/brcm-firmware;
+          t2-fan-control = ./nix/modules/t2-fan-control;
+          t2-smc-control = ./nix/modules/t2-smc-control;
+          react-drm = ./nix/modules/react-drm;
+          t2-apple-audio-dsp = ./nix/modules/t2-apple-audio-dsp;
+          kait2en-suspend = ./nix/modules/kait2en-suspend;
+        };
+
+        # Per-device profiles: each imports the aggregate modules and switches
+        # on that specific T2 Mac model's settings (currently the audio DSP
+        # graph from t2-apple-audio-dsp). Import the one matching your machine,
+        # e.g. `imports = [ inputs.kait2en.nixosProfiles.macbookpro16-1 ];`.
+        nixosProfiles = {
+          macbookpro16-1 = ./nix/profiles/macbookpro16-1.nix;
+          macbookpro16-4 = ./nix/profiles/macbookpro16-4.nix;
+          macbookair9-1 = ./nix/profiles/macbookair9-1.nix;
+        };
+
+        # An overlay exposing the apps under pkgs (modules need an explicit
+        # kernel, so they stay behind `self.lib.<system>.kernelModulesFor`).
+        # The brcm-firmware builder is exposed too; it takes a macOS `version`,
+        # so `brcm-firmware` defaults to sonoma and `brcm-firmwareFor` lets you
+        # pick another (monterey/ventura/sonoma).
+        overlays.default = final: _prev: {
+          kait2en = (final.callPackage ./apps { }) // {
+            kernelModulesFor = kernel: final.callPackage ./modules { inherit kernel; };
+            brcm-firmwareFor = version: final.callPackage ./nix/pkgs/brcm-firmware { inherit version; };
+            brcm-firmware = final.callPackage ./nix/pkgs/brcm-firmware { version = "sonoma"; };
+          };
+        };
+      };
+
+      # Per-system outputs (packages, formatter).
+      perSystem =
+        { pkgs, ... }:
+        let
+          # `callPackage` decorates its result with `override`/
+          # `overrideDerivation`; strip them so only real packages surface.
+          stripCallPackage =
+            set:
+            removeAttrs set [
+              "override"
+              "overrideDerivation"
+            ];
+          # Modules built against the default linuxPackages kernel, so each is
+          # buildable on its own from the flake.
+          kernelModules = stripCallPackage (
+            pkgs.callPackage ./modules { kernel = pkgs.linuxPackages.kernel; }
+          );
+          apps = stripCallPackage (pkgs.callPackage ./apps { });
+        in
+        {
+          # The automatic Wi-Fi/Bluetooth firmware is deliberately *not* a
+          # `packages` output: it is unfree, so listing it here would make
+          # `nix flake check` fail without allowUnfree. Reach it instead through
+          # the overlay (`pkgs.kait2en.brcm-firmware`) or the
+          # `hardware.kait2en.firmware` NixOS module.
+          packages = kernelModules // apps;
+
+          formatter = pkgs.nixfmt-rfc-style;
+        };
+    };
+}

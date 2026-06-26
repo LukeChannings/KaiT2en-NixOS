@@ -16,6 +16,7 @@ MODULES=(
 	t2mfi_fastcharge
 	t2gmux
 	t2thunderbolt
+	apfs
 )
 
 DKMS_POST_TRANSACTION_OVERRIDE="/etc/dkms/framework.conf.d/kait2en-disable-post-transaction.conf"

@@ -69,8 +69,9 @@ welcome.
 
 | Area | Daily-driver state | Upstream state | Remaining work |
 | --- | --- | --- | --- |
-| Audio | Working | Needs upstream work | Provided through `t2bce`. Audio should be split out of BCE internals. |
-| Bluetooth | Partially working | Partial | `brcmfmac` and `hci_bcm4377` need firmware and suspend quirks. UART Bluetooth still has driver-level rough edges. |
+| APFS | Working (read/write) | Out-of-tree driver | macOS APFS volumes mountable via the out-of-tree `apfs` driver. Read/write is experimental upstream; keep backups. |
+| Audio | Working | Needs upstream work | Driver provided through `t2bce`; speaker/mic routing through the `t2-apple-audio-dsp` PipeWire/WirePlumber DSP profiles (per-model graphs from upstream `t2-apple-audio-dsp`, selected with `services.t2-apple-audio-dsp.model` or a device profile under `nix/profiles`). Audio should be split out of BCE internals. |
+| Bluetooth | Partially working | Partial | `brcmfmac` and `hci_bcm4377` need firmware and suspend quirks. Firmware can be extracted by hand (Fedora howto) or automatically on NixOS via `hardware.kait2en.firmware`. UART Bluetooth still has driver-level rough edges. |
 | Camera | Working | Needs upstream work | Provided through the T2 BCE path. |
 | Hybrid graphics | Partially working | Partial | `amdgpu` and `gmux` behavior needs proper fixes instead of suspend-time workarounds. |
 | Keyboard | Working | Needs upstream work | Depends on the T2 BCE VHCI path and KaiT2en input drivers. |
@@ -80,7 +81,7 @@ welcome.
 | Touch ID | Not working | No driver yet | Needs reverse engineering. |
 | T2 AVE | Not working | No driver yet | Needs reverse engineering. |
 | Trackpad | Working | Needs upstream work | Depends on T2 BCE VHCI and `hid_t2magicmouse`. Trackpad support should be upstreamed as clean HID changes. |
-| Wi-Fi | Working | Upstream driver, local firmware | Requires firmware copied from macOS. Firmware handling must stay user-local. |
+| Wi-Fi | Working | Upstream driver, local firmware | Requires Broadcom firmware from macOS. Copied by hand on Fedora (howto); extracted automatically from a macOS recovery image on NixOS via `hardware.kait2en.firmware`. |
 
 The largest remaining kernel task is `t2bce` aka `apple-bce`. It should be
 broken into smaller upstreamable pieces instead of staying as one large T2
@@ -100,6 +101,7 @@ read.
 
 | KaiT2en driver | Replaces or carries | Upstream state | Function |
 | --- | --- | --- | --- |
+| `apfs` | carries `linux-apfs-rw` | Out-of-tree | Apple File System (APFS) read/write support for mounting macOS volumes. |
 | `hid_t2magicmouse` | `hid_magicmouse` with T2 patches | Partial | Apple Magic Mouse, Magic Trackpad and T2 Wellspring trackpad HID support. |
 | `t2bce` | `apple-bce` | No | T2 bridge controller, VHCI devices, audio and camera transport. |
 | `t2bdrm` | `appletbdrm` | Partial | Touch Bar display DRM device for `react-drm`. |

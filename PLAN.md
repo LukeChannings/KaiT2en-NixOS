@@ -34,6 +34,12 @@ Initial modules:
 - `t2mfi_fastcharge`, replacing `apple_mfi_fastcharge`
 - `t2gmux`, replacing `apple_gmux`
 - `t2thunderbolt`, for working Thunderbolt on current T2 Macs
+- `apfs`, carrying `linux-apfs-rw` for mounting macOS APFS volumes
+- `t2-apple-audio-dsp`, per-model PipeWire/WirePlumber DSP profiles (from
+  upstream `t2-apple-audio-dsp`) for T2 speaker crossover/limiting and mic
+  beamforming (config, not a kernel module)
+- `brcm-firmware`, automatic Wi-Fi/Bluetooth firmware extraction from a macOS
+  recovery image (Nix-only; the Fedora path keeps the manual howto)
 
 Initial apps:
 
@@ -53,6 +59,8 @@ modules/
   t2mfi_fastcharge/
   t2gmux/
   t2thunderbolt/
+  apfs/
+  t2-apple-audio-dsp/
 
 apps/
   react-drm/
