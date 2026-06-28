@@ -30,6 +30,11 @@
           in
           {
             kernelModulesFor = kernel: pkgs.callPackage ./modules { inherit kernel; };
+
+            # The KaiT2en kernel: stock 7.0 + the SPI-HID ABI patch the
+            # out-of-tree T2 HID drivers compile against. Build the modules
+            # against *this* (e.g. `kernelModulesFor kait2enKernel`).
+            kait2enKernel = pkgs.callPackage ./nix/pkgs/kernel { };
           }
         );
 
@@ -68,6 +73,8 @@
         overlays.default = final: _prev: {
           kait2en = (final.callPackage ./apps { }) // {
             kernelModulesFor = kernel: final.callPackage ./modules { inherit kernel; };
+            # Stock 7.0 + the SPI-HID ABI patch the T2 HID modules need.
+            kernel = final.callPackage ./nix/pkgs/kernel { };
             brcm-firmwareFor = version: final.callPackage ./nix/pkgs/brcm-firmware { inherit version; };
             brcm-firmware = final.callPackage ./nix/pkgs/brcm-firmware { version = "sonoma"; };
           };
@@ -86,10 +93,14 @@
               "override"
               "overrideDerivation"
             ];
-          # Modules built against the default linuxPackages kernel, so each is
-          # buildable on its own from the flake.
+          # The KaiT2en kernel: stock 7.0 + the SPI-HID ABI patch the
+          # out-of-tree T2 HID drivers compile against.
+          kait2enKernel = pkgs.callPackage ./nix/pkgs/kernel { };
+          # Modules built against the KaiT2en kernel, so each is buildable on
+          # its own from the flake and the HID drivers find the SPI-HID
+          # symbols.
           kernelModules = stripCallPackage (
-            pkgs.callPackage ./modules { kernel = pkgs.linuxPackages.kernel; }
+            pkgs.callPackage ./modules { kernel = kait2enKernel; }
           );
           apps = stripCallPackage (pkgs.callPackage ./apps { });
         in
@@ -99,7 +110,10 @@
           # `nix flake check` fail without allowUnfree. Reach it instead through
           # the overlay (`pkgs.kait2en.brcm-firmware`) or the
           # `hardware.kait2en.firmware` NixOS module.
-          packages = kernelModules // apps;
+          packages = kernelModules // apps // {
+            # The patched KaiT2en kernel (stock 7.0 + SPI-HID ABI patch).
+            kernel = kait2enKernel;
+          };
 
           formatter = pkgs.nixfmt-rfc-style;
         };

@@ -23,6 +23,54 @@ static int bce_pm_suspend_prepare(struct t2bce_device *bce);
 static void bce_pm_suspend_abort(struct t2bce_device *bce);
 static void bce_pm_resume_finish(struct t2bce_device *bce);
 
+/* Awake teardown mirroring the proven-clean manual `rmmod t2bce`: the same ops
+ * as t2bce_remove() minus the PCI device/region/irq-vector release and the
+ * kfree (the pci_dev stays bound; we keep the mappings/irqs so resume can
+ * rebuild in place). Runs in .prepare with the system fully awake and the
+ * mailbox channel live.
+ *
+ * Deliberately does NOT touch bce->aaudio. The fix is proven safe precisely
+ * because it mirrors the manual `rmmod t2bce`, which leaves aaudio (a separate
+ * module) alone; adding aaudio queue-unregister traffic to this awake teardown
+ * re-introduces the cycle-2 below-Linux T2 hard-hang this very function exists
+ * to prevent. Do not tear down aaudio here. */
+static void bce_soft_teardown(struct t2bce_device *bce)
+{
+    pr_info("t2bce: soft teardown (awake, 2nd-suspend fix): destroying VHCI + command queues\n");
+    bce_vhci_destroy(&bce->vhci);
+    bce_xhci_pm_stop(&bce->xhci_pm);
+    bce_free_command_queues(bce);
+    bce->pm_soft_torn_down = true;
+}
+
+/* Rebuild mirroring the probe sequence after bce_alloc_state_buffer: restart the
+ * xhci_pm heartbeat (initial -4 sentinel), re-handshake, recreate the command
+ * queues, recreate the VHCI (re-enumerates internal devices). */
+static int bce_soft_rebuild(struct t2bce_device *bce)
+{
+    int status;
+
+    pr_info("t2bce: soft rebuild (resume, 2nd-suspend fix): re-probing controller core\n");
+    pci_set_master(bce->pci);
+    pci_set_master(bce->pci0);
+    bce_xhci_pm_start(&bce->xhci_pm, true);
+    if ((status = bce_fw_version_handshake(bce))) {
+        pr_err("t2bce: soft rebuild: handshake failed %d\n", status);
+        return status;
+    }
+    if ((status = bce_create_command_queues(bce))) {
+        pr_err("t2bce: soft rebuild: command queue create failed %d\n", status);
+        return status;
+    }
+    if ((status = bce_vhci_create(bce, &bce->vhci))) {
+        pr_err("t2bce: soft rebuild: vhci create failed %d\n", status);
+        return status;
+    }
+    bce->pm_soft_torn_down = false;
+    pr_info("t2bce: soft rebuild: done\n");
+    return 0;
+}
+
 static int bce_alloc_state_buffer(struct t2bce_device *bce)
 {
     /* Windows mba9,1/mbp16,1 keeps a persistent 0x2000 state buffer for device lifetime. */
@@ -462,6 +510,31 @@ static int bce_pm_resume_stateful(struct t2bce_device *bce)
     return 0;
 }
 
+/*
+ * PM .prepare runs while the system is still fully awake (before tasks freeze /
+ * device .suspend / the BCE channel pause). On the 2nd+ stateful cycle, do the
+ * proven-clean awake teardown here - the automated equivalent of the user's
+ * `rmmod t2bce` - so .suspend issues no 0x17 and the T2 never wedges below
+ * Linux. The 1st suspend per boot still runs the normal, working stateful save.
+ */
+static int t2bce_prepare(struct device *dev)
+{
+    struct t2bce_device *bce = pci_get_drvdata(to_pci_dev(dev));
+
+    if (!bce_stateful_supported(bce))
+        return 0;
+
+    mutex_lock(&bce->pm_lock);
+    /* Only tear down when entering a suspend from a stateful-restored controller
+     * (i.e. this is the 2nd+ stateful S3 this boot). */
+    if (bce->pm_stateful_restored && !bce->pm_soft_torn_down) {
+        pr_info("t2bce: prepare: 2nd+ stateful suspend - soft tearing down while awake\n");
+        bce_soft_teardown(bce);
+    }
+    mutex_unlock(&bce->pm_lock);
+    return 0;
+}
+
 static int t2bce_suspend(struct device *dev)
 {
     struct t2bce_device *bce = pci_get_drvdata(to_pci_dev(dev));
@@ -473,6 +546,16 @@ static int t2bce_suspend(struct device *dev)
     bce->stateful_suspend_valid = false;
     bce->no_state_fallback = false;
     bce->vhci.no_state_resume = false;
+
+    /* 2nd-suspend fix: if .prepare tore the controller down while awake, there
+     * is no controller to save - issue no SAVE_STATE_AND_SLEEP (0x17) and let
+     * the platform do a plain S3 (exactly the driverless state the manual
+     * `rmmod` test proved resumes cleanly). */
+    if (bce->pm_soft_torn_down) {
+        pr_info("t2bce: suspend: soft-torn-down, skipping SAVE_STATE_AND_SLEEP\n");
+        status = 0;
+        goto out_unlock;
+    }
 
     status = bce_pm_suspend_prepare(bce);
     if (status)
@@ -530,6 +613,17 @@ static int t2bce_resume(struct device *dev)
     pci_set_master(bce->pci);
     pci_set_master(bce->pci0);
 
+    /* 2nd-suspend fix: if .prepare soft-tore-down the controller, there was no
+     * 0x17/save and nothing to restore. Rebuild it now so the internal
+     * keyboard/trackpad/Touch Bar come back (the `modprobe` the manual test
+     * omitted). */
+    if (bce->pm_soft_torn_down) {
+        status = bce_soft_rebuild(bce);
+        bce->pm_stateful_restored = false;
+        used_stateful = false;
+        goto out_unlock;
+    }
+
     /* Windows resumes from the suspend result, not a preselected mode. */
     used_stateful = bce_stateful_supported(bce) && bce->stateful_suspend_valid;
     pr_info("t2bce: resume path: %s\n", used_stateful ? "stateful" : "no-state");
@@ -540,8 +634,13 @@ static int t2bce_resume(struct device *dev)
     if (status)
         goto out_unlock;
 
-    if (used_stateful)
+    if (used_stateful) {
         bce->stateful_suspend_valid = false;
+        /* A stateful save+restore just completed; the controller is now in a
+         * stateful-restored state. The NEXT stateful suspend is the dangerous
+         * 2nd 0x17, so t2bce_prepare() will soft-tear-down instead. */
+        bce->pm_stateful_restored = true;
+    }
 
     bce_pm_resume_finish(bce);
 
@@ -578,6 +677,7 @@ static struct pci_device_id t2bce_ids[  ] = {
 MODULE_DEVICE_TABLE(pci, t2bce_ids);
 
 struct dev_pm_ops t2bce_pci_driver_pm = {
+        .prepare = t2bce_prepare,
         .suspend = t2bce_suspend,
         .resume = t2bce_resume,
         .complete = t2bce_complete

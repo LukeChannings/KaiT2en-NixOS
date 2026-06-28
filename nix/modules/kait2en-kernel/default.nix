@@ -22,10 +22,18 @@
 let
   cfg = config.hardware.kait2en;
 
+  # The KaiT2en kernel: stock 7.0 + the SPI-HID ABI patch the out-of-tree T2
+  # HID drivers (hid_t2magicmouse, t2touchbar/t2hid) compile against. Stock
+  # `linux_7_0` lacks the SPI HID `enum hid_type` members and HID_SPI_DEVICE()
+  # those drivers reference, so building them against an unpatched kernel
+  # fails. See ../../pkgs/kernel.
+  kait2enKernel = pkgs.callPackage ../../pkgs/kernel { };
+
   # Build every KaiT2en out-of-tree module against the configured kernel. This
   # is exactly what the flake's `lib.<system>.kernelModulesFor kernel` does;
   # done here directly so the module is usable without threading the flake's
-  # `self` through specialArgs.
+  # `self` through specialArgs. It tracks `boot.kernelPackages.kernel`, which
+  # this module defaults to the patched KaiT2en kernel below.
   builtModules = pkgs.callPackage ../../../modules {
     kernel = config.boot.kernelPackages.kernel;
   };
@@ -37,6 +45,19 @@ in
 {
   options.hardware.kait2en = {
     enable = lib.mkEnableOption "KaiT2en T2 Mac kernel drivers, command-line and module blacklist";
+
+    kernelPackages = lib.mkOption {
+      type = lib.types.raw;
+      default = pkgs.linuxPackagesFor kait2enKernel;
+      defaultText = lib.literalExpression "pkgs.linuxPackagesFor (the patched KaiT2en 7.0 kernel)";
+      description = ''
+        The kernelPackages set the T2 Mac boots and the out-of-tree modules
+        build against. Defaults to {option}`boot.kernelPackages` built from the
+        patched KaiT2en kernel (stock Linux 7.0 plus the SPI-HID ABI patch the
+        `hid_t2magicmouse` and `t2touchbar` drivers require). Override only if
+        you carry that patch in your own kernel.
+      '';
+    };
 
     modulePackages = lib.mkOption {
       type = lib.types.listOf lib.types.package;
@@ -138,6 +159,11 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    # Boot the patched KaiT2en kernel so the out-of-tree modules build and load
+    # against a kernel that actually exports the SPI-HID ABI. mkDefault lets a
+    # host still override `boot.kernelPackages` if it must.
+    boot.kernelPackages = lib.mkDefault cfg.kernelPackages;
+
     boot.extraModulePackages = cfg.modulePackages;
 
     boot.kernelModules = cfg.loadModules;

@@ -39,6 +39,16 @@ struct t2bce_device {
     bool mailbox_channel_active;
     struct mutex pm_lock;
 
+    /* 2nd-suspend-per-boot fix (soft-teardown path):
+     *  pm_stateful_restored - controller is currently in a stateful-restored
+     *    state (a stateful save+restore happened and it has not been freshly
+     *    re-probed since). A 2nd stateful save from this state is what wedges
+     *    the T2 below Linux, so the next suspend tears down instead.
+     *  pm_soft_torn_down - .prepare tore the controller down while awake; suspend
+     *    must issue no SAVE_STATE_AND_SLEEP (0x17) and resume must rebuild. */
+    bool pm_stateful_restored;
+    bool pm_soft_torn_down;
+
     struct bce_vhci vhci;
     struct aaudio_device *aaudio;
 };

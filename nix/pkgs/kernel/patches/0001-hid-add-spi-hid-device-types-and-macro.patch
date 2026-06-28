@@ -1,0 +1,54 @@
+From 4f09fcf6456ca1103d8ff62ca01d1edd5e442f52 Mon Sep 17 00:00:00 2001
+From: Janne Grunau <j@jannau.net>
+Date: Sun, 12 Dec 2021 20:40:04 +0100
+Subject: [PATCH] HID: add device IDs for Apple SPI HID devices
+
+Apple Silicon based laptop use SPI as transport for HID. Add support for
+SPI-based HID devices and and Apple keyboard and trackpad devices.
+Intel based laptops using the keyboard input driver applespi use the
+same HID over SPI protocol and can be supported later.
+
+This requires SPI keyboard/mouse HID types since Apple's intenal
+keyboards/trackpads use the same product id.
+
+Signed-off-by: Janne Grunau <j@jannau.net>
+
+KaiT2en note: this is the include/linux/hid.h hunk of the t2linux
+`4001-asahi-trackpad.patch`, carried on its own. KaiT2en ships its own
+out-of-tree T2 HID drivers (hid_t2magicmouse, t2touchbar/t2hid) and
+blacklists the in-tree ones, so it does not want the rest of the patch
+(the in-tree hid-magicmouse / hid-apple / Kconfig changes). It only needs
+the *kernel ABI* those out-of-tree drivers compile against: the SPI HID
+`enum hid_type` members and the HID_SPI_DEVICE() id-table helper, which
+stock 7.0 lacks.
+---
+ include/linux/hid.h | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/include/linux/hid.h b/include/linux/hid.h
+index dce862caf..5952d95a5 100644
+--- a/include/linux/hid.h
++++ b/include/linux/hid.h
+@@ -625,7 +625,9 @@ struct hid_input {
+ enum hid_type {
+ 	HID_TYPE_OTHER = 0,
+ 	HID_TYPE_USBMOUSE,
+-	HID_TYPE_USBNONE
++	HID_TYPE_USBNONE,
++	HID_TYPE_SPI_KEYBOARD,
++	HID_TYPE_SPI_MOUSE,
+ };
+ 
+ enum hid_battery_status {
+@@ -786,6 +788,8 @@ struct hid_descriptor {
+ 	.bus = BUS_BLUETOOTH, .vendor = (ven), .product = (prod)
+ #define HID_I2C_DEVICE(ven, prod)				\
+ 	.bus = BUS_I2C, .vendor = (ven), .product = (prod)
++#define HID_SPI_DEVICE(ven, prod)				\
++	.bus = BUS_SPI, .vendor = (ven), .product = (prod)
+ 
+ #define HID_REPORT_ID(rep) \
+ 	.report_type = (rep)
+-- 
+2.52.0
+

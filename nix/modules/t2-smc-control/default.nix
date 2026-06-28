@@ -56,7 +56,7 @@ in
     # group-writable (video) so the GUI's prepare_charge_limit_access() finds it
     # already writable and skips the pkexec path entirely.
     services.udev.extraRules = lib.mkIf cfg.enableChargeLimitRule ''
-      ACTION=="add|change", SUBSYSTEM=="hwmon", DRIVERS=="applesmc", RUN+="${pkgs.bash}/bin/sh -c 'p=/sys%p/battery_charge_limit; [ -e \"$p\" ] && ${pkgs.coreutils}/bin/chgrp video \"$p\" && ${pkgs.coreutils}/bin/chmod g+w \"$p\"'"
+      ACTION=="add|change", SUBSYSTEM=="hwmon", DRIVERS=="applesmc", RUN+="${pkgs.bash}/bin/sh -c 'p=/sys%p/battery_charge_limit; [ -e \"$$p\" ] && ${pkgs.coreutils}/bin/chgrp video \"$$p\" && ${pkgs.coreutils}/bin/chmod g+w \"$$p\"'"
     '';
 
     users.users = lib.mkIf cfg.enableChargeLimitRule (

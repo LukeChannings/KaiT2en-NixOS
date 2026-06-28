@@ -627,6 +627,8 @@ static int bce_vhci_resume_no_state(struct usb_hcd *hcd)
 static int bce_vhci_resume_stateful(struct usb_hcd *hcd)
 {
     struct bce_vhci *vhci = bce_vhci_from_hcd(hcd);
+    int port;
+    bool armed = false;
 
     /* Linux preserved-state resume path. This is kept separate from the
      * no-state rebuild path below. */
@@ -643,7 +645,47 @@ static int bce_vhci_resume_stateful(struct usb_hcd *hcd)
     bce_vhci_event_queue_resume(&vhci->ev_asynchronous);
     bce_vhci_event_queue_resume(&vhci->ev_commands);
     pr_info("bce_vhci: deferring endpoint resume until ports are ready\n");
-    pr_info("bce_vhci: stateful resume exit status=0\n");
+
+    /*
+     * On a firmware "stateful" resume the controller restores the previous
+     * port/device state, so it does NOT emit a BCE_VHCI_EV_PORT_STATUS_CHANGE
+     * for the internal devices the way a fresh enumeration would. The whole
+     * deferred re-arm machinery (bce_vhci_port_status_change_w ->
+     * bce_vhci_resume_port_queues) only runs when that event arrives or when an
+     * EP0 control transfer fails with status 3 - but EP0 itself is still
+     * suspend-paused here (bce_vhci_suspend_quiesce pauses every tq, including
+     * ep 0x00), so neither trigger fires. The result on MacBookPro16,1 is that
+     * every interrupt-IN endpoint stays BCE_VHCI_PAUSE_SUSPEND forever: the
+     * internal keyboard/trackpad and Touch Bar re-enumerate structurally but
+     * pump zero data.
+     *
+     * Supply the trigger the firmware never sends: arm the port-status worker
+     * for every port that still has a device behind it. The worker re-checks
+     * live port status and, for connected+enabled ports, calls
+     * bce_vhci_resume_port_queues() to clear PAUSE_SUSPEND on the preserved
+     * transfer queues - exactly the un-pause that stateful resume is missing.
+     * We deliberately set only port_change_waiting (re-arm queues), NOT
+     * port_change_pending: bce_vhci_hub_status_data() reports only
+     * port_change_pending to usbcore, so this does not make usbcore re-enumerate
+     * a device that was never actually disconnected.
+     */
+    for (port = 1; port < ARRAY_SIZE(vhci->port_to_device); port++) {
+        if (!vhci->port_to_device[port])
+            continue;
+        if (port - 1 >= vhci->port_count)
+            continue;
+        set_bit(port - 1, &vhci->port_change_waiting);
+        armed = true;
+        pr_info("bce_vhci: stateful resume arming port worker for port=%d dev=%d\n",
+                port, vhci->port_to_device[port]);
+    }
+
+    if (armed)
+        queue_delayed_work(vhci->tq_state_wq, &vhci->w_port_status_change, 0);
+    else
+        vhci->stateful_resume_gating = false;
+
+    pr_info("bce_vhci: stateful resume exit status=0 armed=%d\n", armed);
     return 0;
 }
 

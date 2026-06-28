@@ -31,6 +31,38 @@ let
   audioFiles = ../../../modules/t2-apple-audio-dsp;
   model = cfg.model;
 
+  # ── Raw T2 card -> named ALSA devices (Speakers / Digital Mic) ─────────────
+  # t2bce brings the speakers up as ONE undifferentiated multichannel ALSA
+  # device (`alsa_output.pci-….multichannel-output`). The DSP layer below,
+  # however, keys off the per-transducer split the way macOS/Asahi expose it:
+  # the `node.software-dsp.rules` in 51-t2-dsp.conf match `alsa.name =
+  # "Speaker"` / `"Digital Mic"`, and each graph's `playback.props.target.object`
+  # is the `…​.Speakers` node. Without that split nothing matches and every DSP
+  # link fails ("N of N PipeWire links failed to activate") — only a Dummy sink
+  # survives.
+  #
+  # The split comes from the ALSA-Card-Profile (ACP) layer inside PipeWire's
+  # libspa-alsa loading the per-model profile-set (apple-t2x{2,4,6}.conf) +
+  # mixer paths, originally from kekrby/t2-better-audio. PipeWire now ships
+  # those files in its stock ACP mixer dir, so nothing needs to be fetched or
+  # patched — ACP just has to be told which set to use. libspa-alsa reads the
+  # `ACP_PROFILE_SET` udev property per card, so the only missing piece is the
+  # udev rule that stamps it on the T2 sound card.
+  #
+  # The rule matches the T2 audio PCI device (Apple vendor 0x106b, device
+  # 0x1803) and derives N from the AppleT2x<N> card id in /proc/asound/cards
+  # (x6 on the MacBookPro16,1's six-transducer array), selecting
+  # apple-t2x<N>.conf.
+  t2AudioUdevRules = pkgs.writeTextDir "lib/udev/rules.d/91-t2-audio-profile.rules" ''
+    SUBSYSTEM!="sound", GOTO="t2_audio_end"
+    ACTION!="change", GOTO="t2_audio_end"
+    KERNEL!="card*", GOTO="t2_audio_end"
+
+    SUBSYSTEMS=="pci", ATTRS{vendor}=="0x106b", ATTRS{device}=="0x1803", PROGRAM="${pkgs.gnused}/bin/sed -n 's/.*AppleT2x\([0-9]\).*/\1/p' /proc/asound/cards", ENV{ACP_PROFILE_SET}="apple-t2x%c.conf"
+
+    LABEL="t2_audio_end"
+  '';
+
   # The vendored FIRs/graphs/Lua for this model already live at this store path,
   # so it is what the upstream `/usr/share/t2-linux-audio/<model>` references are
   # rewritten to.
@@ -90,6 +122,10 @@ in
     # The DSP graphs use the builtin convolver plus several LV2 plugins; the
     # convolver lives in pipewire itself, the rest are pulled in below.
     environment.systemPackages = [ pkgs.ladspaPlugins ];
+
+    # Split the raw T2 card into the named Speakers / Digital Mic / …​ ALSA
+    # devices the DSP layer targets (see the ACP profile-set note above).
+    services.udev.packages = [ t2AudioUdevRules ];
 
     services.pipewire.wireplumber = {
       configPackages = [

@@ -957,6 +957,14 @@ get_version:
 		if (pdev) {
 			pr_info("Switching to IGD");
 			gmux_switchto(VGA_SWITCHEROO_IGD);
+			/*
+			 * vga_set_default_device() is not exported to
+			 * out-of-tree modules (only vga_default_device() is),
+			 * so we can't relabel the default VGA device here.
+			 * gmux_switchto() above already performs the actual
+			 * eDP/panel switch to the iGPU, which is what force_igd
+			 * is really after.
+			 */
 			pci_dev_put(pdev);
 		} else {
 			pr_err("force_idg is true, but couldn't find iGPU at 00:02.0! Is apple-set-os working?");

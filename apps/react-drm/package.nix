@@ -73,6 +73,16 @@ buildNpmPackage {
   # build:native then build:ts; the workspace adds the control-center tsc).
   npmBuildScript = "build";
 
+  # The root `build` only compiles the parent package (src/ -> dist/src/). The
+  # systemd user service runs linux-touchbar-control-center/dist/index.js, which
+  # is produced by the *workspace's* own `tsc -p tsconfig.json` — the root build
+  # never runs it, so without this step that file is missing and the unit
+  # crash-loops with MODULE_NOT_FOUND. Compile the workspace here against its
+  # tsconfig (typescript is an installed devDependency in node_modules/.bin).
+  postBuild = ''
+    node_modules/.bin/tsc -p linux-touchbar-control-center/tsconfig.json
+  '';
+
   # buildNpmPackage's default install expects a `bin`/`files`; this is a
   # private app tree, so copy the built workspace + system assets ourselves.
   dontNpmInstall = true;
