@@ -1,9 +1,9 @@
 # KaiT2en profile for the MacBookPro16,4 (T2, 2019 16" MacBook Pro, alt board).
 #
 # Turns on everything applicable to this machine: the out-of-tree T2 kernel
-# drivers (with the dual-GPU `force_igd` quirk), Wi-Fi/Bluetooth firmware, the
-# suspend/resume fixes, the Touch Bar runtime, the fan and SMC GUIs, and this
-# model's audio DSP profile ("16_4"). Import it from your host config:
+# drivers, Wi-Fi/Bluetooth firmware, the suspend/resume fixes, the internal T2
+# debug-interface handling, the Touch Bar runtime, the fan and SMC GUIs, and
+# this model's audio DSP profile ("16_4"). Import it from your host config:
 #
 #   imports = [ inputs.kait2en.nixosProfiles.macbookpro16-4 ];
 #
@@ -21,12 +21,11 @@
 
   hardware.kait2en = {
     enable = true;
-    # MacBookPro16,4 is a dual-GPU machine; force the integrated GPU.
-    forceIgd = true;
     firmware.enable = true;
   };
 
   services.kait2en-suspend.enable = true;
+  services.t2-ncm.enable = true;
   services.react-drm.enable = true;
   services.t2-fan-control.enable = true;
   services.t2-smc-control.enable = true;

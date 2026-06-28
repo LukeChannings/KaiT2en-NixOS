@@ -2,8 +2,8 @@
 # you the `hardware.kait2en` (kernel drivers/cmdline/blacklist) option, the
 # `hardware.kait2en.firmware` (declarative Wi-Fi/Bluetooth firmware) option plus
 # the `services.t2-fan-control`, `services.t2-smc-control`, `services.react-drm`,
-# `services.t2-apple-audio-dsp` and `services.kait2en-suspend` options; each leaves
-# itself disabled until you set its `enable = true`.
+# `services.t2-apple-audio-dsp`, `services.kait2en-suspend` and `services.t2-ncm`
+# options; each leaves itself disabled until you set its `enable = true`.
 {
   imports = [
     ./kait2en-kernel
@@ -13,5 +13,6 @@
     ./react-drm
     ./t2-apple-audio-dsp
     ./kait2en-suspend
+    ./t2-ncm
   ];
 }

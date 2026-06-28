@@ -27,7 +27,13 @@ let
   # `linux_7_0` lacks the SPI HID `enum hid_type` members and HID_SPI_DEVICE()
   # those drivers reference, so building them against an unpatched kernel
   # fails. See ../../pkgs/kernel.
-  kait2enKernel = pkgs.callPackage ../../pkgs/kernel { };
+  #
+  # Applied directly (not via callPackage) so the result keeps the kernel's own
+  # chainable `.override` — callPackage would wrap it in makeOverridable and
+  # shadow that with an override taking only `linux_7_0`, breaking the
+  # `pkgs.linuxPackagesFor kait2enKernel` below (NixOS overrides the kernel
+  # with `{ features, kernelPatches, randstructSeed }`).
+  kait2enKernel = import ../../pkgs/kernel { inherit (pkgs) linux_7_0; };
 
   # Build every KaiT2en out-of-tree module against the configured kernel. This
   # is exactly what the flake's `lib.<system>.kernelModulesFor kernel` does;
@@ -140,14 +146,20 @@ in
       '';
     };
 
+    # NOTE: the old `forceIgd` option (which added `t2gmux.force_igd=1`) was
+    # removed when upstream dropped the incomplete boot-time IGD probe from
+    # t2gmux (super commit "gmux: remove incomplete T2linux patch to probe igd
+    # on boot"). The module no longer has a `force_igd` parameter, so passing
+    # that kernel arg would make t2gmux fail to load. Define it as a removed
+    # option so existing configs get a clear assertion instead of a silent
+    # boot-time module-load failure.
     forceIgd = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
+      type = lib.types.nullOr lib.types.bool;
+      default = null;
+      visible = false;
       description = ''
-        Force the integrated GPU on dual-GPU MacBook Pros (adds
-        `t2gmux.force_igd=1`). Set this on MacBookPro15,1 / 15,3 / 16,1 / 16,4 —
-        the models the Fedora installer detects via DMI. Harmless to leave off
-        on single-GPU machines.
+        Removed: t2gmux no longer carries the `force_igd` boot-time IGD probe
+        (dropped upstream as incomplete), so there is nothing for this to set.
       '';
     };
 
@@ -159,6 +171,18 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = cfg.forceIgd == null;
+        message = ''
+          hardware.kait2en.forceIgd has been removed: t2gmux no longer has a
+          `force_igd` parameter (the incomplete boot-time IGD probe was dropped
+          upstream). Passing `t2gmux.force_igd=1` would make the module fail to
+          load. Remove this option from your configuration.
+        '';
+      }
+    ];
+
     # Boot the patched KaiT2en kernel so the out-of-tree modules build and load
     # against a kernel that actually exports the SPI-HID ABI. mkDefault lets a
     # host still override `boot.kernelPackages` if it must.
@@ -185,7 +209,6 @@ in
       "mem_sleep_default=deep"
       "initcall_blacklist=cmos_init,magicmouse_driver_init"
     ]
-    ++ lib.optional cfg.forceIgd "t2gmux.force_igd=1"
     ++ cfg.extraKernelParams;
   };
 }

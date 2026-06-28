@@ -1,14 +1,14 @@
 # KaiT2en profile for the MacBookAir9,1 (T2, 2020 MacBook Air).
 #
 # Turns on everything applicable to this machine: the out-of-tree T2 kernel
-# drivers, Wi-Fi/Bluetooth firmware, the suspend/resume fixes, the fan and SMC
-# GUIs, and this model's audio DSP profile ("9_1", which ships no force-unmute
-# Lua). Import it from your host config:
+# drivers, Wi-Fi/Bluetooth firmware, the suspend/resume fixes, the internal T2
+# debug-interface handling, the fan and SMC GUIs, and this model's audio DSP
+# profile ("9_1", which ships no force-unmute Lua). Import it from your host
+# config:
 #
 #   imports = [ inputs.kait2en.nixosProfiles.macbookair9-1 ];
 #
 # Unlike the 16" MacBook Pro profiles this omits:
-#   * hardware.kait2en.forceIgd — the Air has a single (integrated) GPU.
 #   * services.react-drm — the Air has no Touch Bar.
 #
 # Notes:
@@ -27,6 +27,7 @@
   };
 
   services.kait2en-suspend.enable = true;
+  services.t2-ncm.enable = true;
   services.t2-fan-control.enable = true;
   services.t2-smc-control.enable = true;
 
