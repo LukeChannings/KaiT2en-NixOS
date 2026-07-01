@@ -83,6 +83,7 @@ in
         "t2bce"
         "t2bdrm"
         "t2hid"
+        "t2touchbar_cfg"
         "t2touchbar_bl"
         "t2touchbar_kbd"
         "t2mfi_fastcharge"
@@ -93,7 +94,12 @@ in
       description = ''
         Loadable module names (not package names) to load at boot. Note these
         differ from the package names: the `t2touchbar` package builds `t2hid`,
-        `t2touchbar_bl` and `t2touchbar_kbd`.
+        `t2touchbar_cfg`, `t2touchbar_bl` and `t2touchbar_kbd`.
+
+        `t2touchbar_cfg` is the USB configuration selector that switches the
+        Touch Bar display to its HID+display configuration before the interface
+        drivers bind. `t2bce` carries `MODULE_SOFTDEP("pre: t2touchbar_cfg")`,
+        so it is also pulled in ahead of t2bce automatically.
 
         The `apfs` driver (package name `linux-apfs-rw`) is intentionally not
         listed: like any filesystem driver it is autoloaded by the kernel when
@@ -110,8 +116,10 @@ in
         "t2bce"
         "t2bdrm"
         "t2hid"
+        "t2touchbar_cfg"
         "t2touchbar_bl"
         "t2touchbar_kbd"
+        "hid_t2magicmouse"
         "t2mfi_fastcharge"
         "t2gmux"
         "t2thunderbolt"
@@ -120,6 +128,11 @@ in
         Modules to load from the initramfs (early), mirroring the upstream
         `dracut --add-drivers` list in rebuild-initramfs.sh. Needed for the
         drivers that must bind before the root device / display come up.
+
+        Includes `t2touchbar_cfg` (selects the Touch Bar display USB
+        configuration before BCE enumeration; t2bce softdeps on it) and
+        `hid_t2magicmouse` so the Magic Trackpad/Mouse HID driver is present in
+        early boot.
       '';
     };
 

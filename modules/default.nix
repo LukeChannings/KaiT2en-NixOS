@@ -73,7 +73,7 @@ in
   t2touchbar = mkSimple {
     pname = "t2touchbar";
     version = "0.1";
-    meta.description = "Apple T2 Touch Bar HID, backlight and keyboard drivers";
+    meta.description = "Apple T2 Touch Bar HID, USB config selector, backlight and keyboard drivers";
   };
 
   t2thunderbolt = mkSimple {
