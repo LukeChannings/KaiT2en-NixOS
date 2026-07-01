@@ -118,6 +118,24 @@ function appletbdrmCardPresent(): boolean {
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 /**
+ * Wait (passively, touching nothing on the bus) for the appletbdrm DRM card
+ * to appear, up to `deadline`. Returns the card node, or null on timeout.
+ *
+ * Used on a stateful resume where the Touch Bar is already in config 2: the
+ * kernel re-binds appletbdrm itself once the t2bce VHCI re-arm completes, so
+ * all we must do is wait — see the bus-desync warning in attachTouchBar().
+ */
+async function waitForCard(deadline: number): Promise<string | null> {
+  let card = appletbdrmCardNode();
+  while (!card) {
+    if (Date.now() > deadline) return null;
+    await sleep(250);
+    card = appletbdrmCardNode();
+  }
+  return card;
+}
+
+/**
  * Switch the Touch Bar to config 2 (appletbdrm auto-loads) and wait for the
  * DRM card to appear.
  */
@@ -132,6 +150,35 @@ export async function attachTouchBar(): Promise<void> {
     if (Date.now() > deadline) throw new Error('Touch Bar USB device (05ac:8302) did not enumerate');
     await sleep(500);
     dev = findTouchBarUsb();
+  }
+
+  // ── Stateful-resume fast path: device already in config 2 ────────────────
+  //
+  // The kait2en t2bce driver does a *stateful* S3 resume: it preserves the
+  // bce-vhci virtual USB bus across suspend and re-arms every port itself
+  // (`bce_vhci_resume_stateful`, logs `stateful resume … exit status=0
+  // armed=1`). The Touch Bar therefore comes back ALREADY in config 2, owned
+  // by the kernel, and appletbdrm re-binds on its own a beat later.
+  //
+  // In that state we must touch NOTHING on the bus. A bConfigurationValue
+  // write (even the 0→2 "reprobe" below) makes the kernel reset the Touch
+  // Bar's bce-vhci port; because the internal keyboard and trackpad share that
+  // same virtual hub (ports 1-5/1-6), the reset desyncs the whole vhci command
+  // queue — minutes of `bce-vhci: Possible desync, cmd cancel timed out`,
+  // `hub_ext_port_status failed (-110)`, and the keyboard + trackpad go dead
+  // until reboot (observed Scrap 2026-06-28: kernel restored input cleanly,
+  // then this attach poked port 6 and killed all internal input).
+  //
+  // So when the device is already configured, just wait for the card the
+  // kernel is about to (re)bind — no config writes, no resets, no reprobe.
+  if (readConfigValue(dev) === '2') {
+    const card = await waitForCard(deadline);
+    if (card) {
+      await waitForCardAccess(card, deadline);
+      return;
+    }
+    // Card never appeared despite config 2 — fall through to the active
+    // attach path below (cold-boot wedge, not a stateful resume).
   }
 
   while (readConfigValue(dev) !== '2') {
@@ -168,6 +215,10 @@ export async function attachTouchBar(): Promise<void> {
     dev = findTouchBarUsb() ?? dev;
   }
 
+  // Active attach path: the device is NOT already configured (cold boot, or a
+  // resume that re-enumerated the bus from scratch). Here driving config 2 and
+  // reprobing is safe — the bce-vhci port is not in the preserved/shared state
+  // the stateful fast path above guards against.
   let card = appletbdrmCardNode();
   let nextReprobe = Date.now() + 2000;
   while (!card) {
@@ -177,15 +228,20 @@ export async function attachTouchBar(): Promise<void> {
     // finished restoring its modules. In that window appletbdrm may probe
     // once, fail with ETIMEDOUT, and never be probed again even though config
     // 2 remains active. Re-apply the configuration until a DRM card appears.
-    if (Date.now() >= nextReprobe) {
+    //
+    // BUT never reprobe a device that is already in config 2: on a stateful
+    // resume that config is the kernel's preserved state on a shared vhci bus,
+    // and rewriting it desyncs the hub and kills the internal keyboard +
+    // trackpad (see the fast-path note above). The stateful case is handled
+    // before this loop; if we somehow re-enter with config 2 here, wait rather
+    // than poke.
+    if (Date.now() >= nextReprobe && readConfigValue(dev) !== '2') {
       dev = findTouchBarUsb() ?? dev;
       const node = usbDevNode(dev);
       let cfg = path.join(dev, 'bConfigurationValue');
       try {
         fs.accessSync(node, fs.constants.W_OK);
         fs.accessSync(cfg, fs.constants.W_OK);
-        if (readConfigValue(dev) === '2')
-          console.warn('[suspend] config 2 active but no DRM card — reprobe');
         if (readConfigValue(dev) === '') usbReset(node);
         fs.writeFileSync(cfg, '0');
         await sleep(500);
@@ -202,9 +258,15 @@ export async function attachTouchBar(): Promise<void> {
     card = appletbdrmCardNode();
   }
 
-  // The /dev/dri node shows up before udev finishes applying its permission
-  // rules to it — opening in that window fails with EACCES. Wait until the
-  // node is actually openable, not just present in sysfs.
+  await waitForCardAccess(card, deadline);
+}
+
+/**
+ * The /dev/dri node shows up before udev finishes applying its permission
+ * rules to it — opening in that window fails with EACCES. Wait until the node
+ * is actually openable, not just present in sysfs.
+ */
+async function waitForCardAccess(card: string, deadline: number): Promise<void> {
   for (;;) {
     try { fs.accessSync(card, fs.constants.R_OK | fs.constants.W_OK); break; }
     catch {
