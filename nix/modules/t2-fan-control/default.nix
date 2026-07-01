@@ -48,6 +48,11 @@ in
       serviceConfig = {
         Type = "simple";
         ExecStart = "${lib.getExe cfg.package} --daemon";
+        # Backstop the daemon's in-process SIGTERM handler: release the fans
+        # back to SMC auto control even if the daemon was SIGKILLed or crashed,
+        # so they are never left latched in manual mode with the firmware's
+        # protective max-on-hot curve disabled.
+        ExecStopPost = "${lib.getExe cfg.package} --release";
         Restart = "always";
         RestartSec = 2;
         # The daemon creates /run/t2-fancontrol itself, but letting systemd own

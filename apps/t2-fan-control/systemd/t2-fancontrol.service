@@ -7,6 +7,10 @@ Type=simple
 User=root
 Group=root
 ExecStart=/usr/local/bin/t2-fancontrol-gtk --daemon
+# Backstop the in-daemon SIGTERM handler: hand the fans back to the SMC even if
+# the daemon was SIGKILLed or crashed, so they are never left latched in manual
+# mode with the firmware's protective curve disabled.
+ExecStopPost=/usr/local/bin/t2-fancontrol-gtk --release
 Restart=always
 RestartSec=2
 

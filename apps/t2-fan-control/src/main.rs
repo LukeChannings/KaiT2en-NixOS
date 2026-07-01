@@ -30,7 +30,7 @@ use gtk4::{
     Grid, Label, LinkButton, Orientation, ToggleButton, gdk,
 };
 use ipc::{DaemonState, Request};
-use signal_hook::consts::signal::SIGHUP;
+use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGTERM};
 use sysfs::{discover_fans, discover_temperature_sources, FanEndpoint, TemperatureSnapshot, TemperatureSource};
 
 const APP_ID: &str = "org.t2fancontrol.gtk";
@@ -268,6 +268,19 @@ impl AppModel {
 }
 
 fn main() -> glib::ExitCode {
+    // One-shot: release every fan back to SMC auto control and exit. Used as the
+    // systemd unit's ExecStopPost backstop — it runs even when the daemon was
+    // SIGKILLed or crashed (cases the in-daemon SIGTERM handler can't catch),
+    // guaranteeing the fans are never left latched in manual with the firmware
+    // governor disabled.
+    if std::env::args().any(|arg| arg == "--release") {
+        if let Err(error) = release_main() {
+            eprintln!("{error}");
+            return glib::ExitCode::from(1);
+        }
+        return glib::ExitCode::SUCCESS;
+    }
+
     if std::env::args().any(|arg| arg == "--daemon") {
         if let Err(error) = daemon_main() {
             eprintln!("{error}");
@@ -285,6 +298,14 @@ fn main() -> glib::ExitCode {
     app.run()
 }
 
+fn release_main() -> error::Result<()> {
+    let fans = discover_fans()?;
+    for fan in &fans {
+        fan.release_to_auto()?;
+    }
+    Ok(())
+}
+
 fn daemon_main() -> error::Result<()> {
     let listener = ipc::bind_listener()?;
     let reload_requested = Arc::new(AtomicBool::new(false));
@@ -294,9 +315,37 @@ fn daemon_main() -> error::Result<()> {
             source,
         }
     })?;
+
+    // Release the fans back to SMC auto control on termination. The daemon owns
+    // the fans while running (it sets fanN_manual=1 / writes _target), which
+    // DISABLES the firmware's protective max-on-hot curve. If we exit without
+    // releasing — systemctl stop, shutdown, the suspend-time teardown, OOM, or a
+    // panic — the fans stay latched at the last speed we wrote with no thermal
+    // governor behind them, so the box silently overheats. Trap SIGTERM/SIGINT,
+    // hand the fans back, then exit. (A SIGKILL or hard hang can't be caught;
+    // the systemd unit's ExecStopPost is the backstop for those.)
+    let term_requested = Arc::new(AtomicBool::new(false));
+    for signal in [SIGTERM, SIGINT] {
+        signal_hook::flag::register(signal, term_requested.clone()).map_err(|source| {
+            error::FanControlError::Io {
+                path: std::path::PathBuf::from("<signal-hook>"),
+                source,
+            }
+        })?;
+    }
+
     let mut runtime = DaemonRuntime::new()?;
 
     loop {
+        if term_requested.load(Ordering::Relaxed) {
+            // Best-effort: hand the fans back to the SMC and leave the loop so
+            // the process exits cleanly with hardware in a safe state.
+            if let Err(error) = runtime.release_fans() {
+                eprintln!("t2-fancontrol: failed to release fans on shutdown: {error}");
+            }
+            return Ok(());
+        }
+
         if reload_requested.swap(false, Ordering::Relaxed) {
             runtime.reload_config()?;
         }
@@ -388,6 +437,17 @@ impl DaemonRuntime {
             self.snapshot.temperatures = TemperatureSnapshot::read_from(&mut self.temperatures);
             self.snapshot.effective_temp_c = self.snapshot.temperatures.effective_temp_c();
         }
+    }
+
+    /// Hand the fans back to SMC auto control. Called on daemon termination so
+    /// we never leave the fans latched in manual mode with the firmware's
+    /// protective curve disabled. Resets the controller so a later restart
+    /// re-applies cleanly.
+    fn release_fans(&mut self) -> error::Result<()> {
+        self.controller.release_to_system(&mut self.fans)?;
+        self.snapshot.target_percent = None;
+        self.snapshot.target_rpm_per_fan.clear();
+        Ok(())
     }
 
     fn reload_config(&mut self) -> error::Result<()> {
