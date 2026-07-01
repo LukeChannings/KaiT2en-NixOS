@@ -27,12 +27,28 @@
   linux_7_0,
 }:
 
+let
+  # Content-address the patch by its own bytes, NOT as a subpath of the flake
+  # source. When KaiT2en is consumed as a `path:`/git flake input, every file in
+  # the repo lives under one `…-source` store path whose hash covers the WHOLE
+  # tree; referencing `./patches/0001-….patch` directly embeds that whole-tree
+  # path into the kernel's `kernelPatches`, so editing any unrelated file (a
+  # module `.c`, even the README) moves `…-source`, changes the patch's store
+  # path, and forces a full kernel rebuild. `builtins.path` with a single-file
+  # `path` gives the patch a store path derived only from its own contents,
+  # stable across unrelated repo edits — so the kernel is rebuilt only when the
+  # patch itself changes.
+  hidSpiDeviceTypesPatch = builtins.path {
+    name = "kait2en-hid-add-spi-hid-device-types-and-macro.patch";
+    path = ./patches/0001-hid-add-spi-hid-device-types-and-macro.patch;
+  };
+in
 linux_7_0.override {
   # Append, don't replace: keep nixpkgs' own structuredExtraConfig / patches.
   kernelPatches = (linux_7_0.kernelPatches or [ ]) ++ [
     {
       name = "kait2en-hid-spi-device-types";
-      patch = ./patches/0001-hid-add-spi-hid-device-types-and-macro.patch;
+      patch = hidSpiDeviceTypesPatch;
     }
   ];
 }
