@@ -120,24 +120,32 @@ pub fn curve_for_preset(config: &AppConfig) -> Vec<CurvePoint> {
 }
 
 pub fn default_curve_for(preset: PresetKind) -> Vec<CurvePoint> {
+    // Every preset MUST reach 100% before the package critical-trip temperature
+    // (Tjmax ~100C on these i7/i9 T2 Macs). The daemon takes the fans out of SMC
+    // auto control, so its curve is the ONLY thermal governor: a curve that only
+    // hits full speed AT 100C gives the chip no headroom and lets it ride Tjmax
+    // until the platform force-suspends. We saturate by ~90C, leaving a ~10C
+    // margin, and bias the knee earlier on the busier presets.
     match preset {
         PresetKind::Quiet => vec![
             CurvePoint { temp_c: 20, speed_percent: 1 },
-            CurvePoint { temp_c: 70, speed_percent: 10 },
-            CurvePoint { temp_c: 85, speed_percent: 55 },
-            CurvePoint { temp_c: 100, speed_percent: 100 },
+            CurvePoint { temp_c: 60, speed_percent: 12 },
+            CurvePoint { temp_c: 75, speed_percent: 40 },
+            CurvePoint { temp_c: 85, speed_percent: 75 },
+            CurvePoint { temp_c: 92, speed_percent: 100 },
         ],
         PresetKind::Balanced => vec![
             CurvePoint { temp_c: 20, speed_percent: 15 },
-            CurvePoint { temp_c: 60, speed_percent: 30 },
-            CurvePoint { temp_c: 80, speed_percent: 50 },
-            CurvePoint { temp_c: 100, speed_percent: 100 },
+            CurvePoint { temp_c: 55, speed_percent: 30 },
+            CurvePoint { temp_c: 70, speed_percent: 50 },
+            CurvePoint { temp_c: 80, speed_percent: 75 },
+            CurvePoint { temp_c: 90, speed_percent: 100 },
         ],
         PresetKind::Performance => vec![
-            CurvePoint { temp_c: 20, speed_percent: 15 },
-            CurvePoint { temp_c: 40, speed_percent: 35 },
-            CurvePoint { temp_c: 75, speed_percent: 75 },
-            CurvePoint { temp_c: 85, speed_percent: 100 },
+            CurvePoint { temp_c: 20, speed_percent: 20 },
+            CurvePoint { temp_c: 40, speed_percent: 40 },
+            CurvePoint { temp_c: 65, speed_percent: 75 },
+            CurvePoint { temp_c: 80, speed_percent: 100 },
         ],
         PresetKind::Custom => vec![
             CurvePoint { temp_c: 35, speed_percent: 25 },
