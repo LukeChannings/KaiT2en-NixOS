@@ -9,6 +9,15 @@ use crate::{
     sysfs::{FanEndpoint, TemperatureSnapshot, TemperatureSource},
 };
 
+/// Number of recent temperature samples the controller tracks (~800ms apart,
+/// so this is roughly a 6-7s window). The control temperature is the PEAK of
+/// this window, not the mean: fans must lead temperature, and on a chip that
+/// can jump 50->100C in seconds a long mean-smoothed window left the fans
+/// trailing far behind the spike and the package riding Tjmax. A short
+/// peak-hold window reacts immediately to a spike and decays within seconds
+/// once it passes.
+const SAMPLE_WINDOW: usize = 8;
+
 pub struct Controller {
     samples: VecDeque<u8>,
     last_applied_percent: Option<u8>,
@@ -26,7 +35,7 @@ pub struct ControlSnapshot {
 impl Controller {
     pub fn new() -> Self {
         Self {
-            samples: VecDeque::with_capacity(50),
+            samples: VecDeque::with_capacity(SAMPLE_WINDOW),
             last_applied_percent: None,
             last_tick: Instant::now() - Duration::from_secs(5),
         }
@@ -43,7 +52,7 @@ impl Controller {
 
         if let Some(temp) = effective_temp {
             self.samples.push_back(temp);
-            if self.samples.len() > 50 {
+            if self.samples.len() > SAMPLE_WINDOW {
                 self.samples.pop_front();
             }
         }
@@ -57,9 +66,15 @@ impl Controller {
             let should_apply = should_apply_target(self.last_applied_percent, target_percent);
 
             for fan in fans {
+                // Failsafe: a missing target means we have no usable temperature
+                // reading (sensor read failed / not yet sampled). Once we have
+                // taken the fans out of SMC auto we own cooling, so an unknown
+                // temperature must drive them to MAX, never min — running a
+                // sensorless fan at minimum is how the package reaches Tjmax and
+                // the platform force-suspends.
                 let rpm = target_percent
                     .map(|percent| fan.percent_to_rpm(percent))
-                    .unwrap_or(fan.min_speed);
+                    .unwrap_or(fan.max_speed);
 
                 if should_apply {
                     fan.set_target_speed(rpm)?;
@@ -99,12 +114,11 @@ impl Controller {
     }
 
     fn smoothed_temp(&self) -> Option<u8> {
-        if self.samples.is_empty() {
-            return None;
-        }
-
-        let sum: u16 = self.samples.iter().map(|value| *value as u16).sum();
-        Some((sum / self.samples.len() as u16) as u8)
+        // Peak-hold over the recent window (see SAMPLE_WINDOW): track the hottest
+        // recent reading so the fans lead a temperature spike instead of
+        // trailing a slow mean. The peak ages out of the window within a few
+        // seconds once load drops, so the fans still wind back down.
+        self.samples.iter().copied().max()
     }
 }
 
