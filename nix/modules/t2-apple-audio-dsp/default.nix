@@ -177,6 +177,102 @@ in
         ))
       ];
 
+      # Hide the analog headphone-jack sink while nothing is plugged in, so the
+      # output picker shows a single "…​DSP Speakers" entry instead of it plus a
+      # permanently-listed (but dead) "Headphones". The apple-t2x{2,4,6} profile
+      # exposes Speakers and Headphones as TWO always-present output mappings;
+      # the DSP layer's `hide-parent` only suppresses the raw *Speakers* node,
+      # leaving Headphones visible even with an empty jack.
+      #
+      # The card reports jack state as the `t2-headphones` output route's
+      # `available` field ("yes" when plugged, "no"/"unknown" otherwise). This
+      # script revokes read permission on the headphone sink node for every
+      # non-infrastructure client whenever that route is unavailable (removing
+      # it from the picker, the same mechanism WirePlumber's software-dsp
+      # `hide-parent` uses) and restores it when a jack is plugged in — so the
+      # sink reappears, and WirePlumber's route-availability policy can switch
+      # output to it. The exemption covers the WirePlumber daemon AND the
+      # PipeWire daemon (`application.name = "pipewire"`), matching the DSP
+      # filter-chain note above.
+      extraScripts."hide-jack-when-unplugged.lua" = ''
+        clients_om = ObjectManager { Interest { type = "client" } }
+        hp_om = ObjectManager {
+          Interest {
+            type = "node",
+            Constraint { "alsa.name", "=", "Codec Output", type = "pw" },
+            Constraint { "media.class", "=", "Audio/Sink", type = "pw" },
+          }
+        }
+        devices_om = ObjectManager {
+          Interest {
+            type = "device",
+            Constraint { "alsa.card_name", "=", "Apple T2 Audio", type = "pw" },
+          }
+        }
+
+        hp_node_id = nil
+
+        function is_infra(client)
+          local p = client.properties
+          return p["wireplumber.daemon"] or p["application.name"] == "pipewire"
+        end
+
+        -- Read the t2-headphones output route's availability across all T2
+        -- audio devices. Returns true only when a jack is actually plugged in.
+        function jack_available()
+          for device in devices_om:iterate() do
+            for p in device:iterate_params("EnumRoute") do
+              local r = p:parse()
+              if r.pod_type == "Object" and r.object_id == "EnumRoute" then
+                if r.properties.name == "t2-headphones" then
+                  if r.properties.available == "yes" then
+                    return true
+                  end
+                end
+              end
+            end
+          end
+          return false
+        end
+
+        function apply()
+          if hp_node_id == nil then return end
+          local perm = jack_available() and "r-" or "-"
+          for client in clients_om:iterate { type = "client" } do
+            if not is_infra(client) then
+              client:update_permissions { [hp_node_id] = perm }
+            end
+          end
+        end
+
+        hp_om:connect("object-added", function(om, node)
+          hp_node_id = node["bound-id"]
+          apply()
+        end)
+        hp_om:connect("object-removed", function(om, node) hp_node_id = nil end)
+        clients_om:connect("object-added", function(om, client) apply() end)
+        -- Re-evaluate on plug/unplug: the device emits params-changed for
+        -- "Route" when a jack's availability flips.
+        devices_om:connect("object-added", function(om, device)
+          device:connect("params-changed", function(d, name)
+            if name == "Route" then apply() end
+          end)
+        end)
+
+        clients_om:activate()
+        hp_om:activate()
+        devices_om:activate()
+      '';
+
+      extraConfig."99-t2-hide-jack" = {
+        "wireplumber.components" = [
+          {
+            name = "hide-jack-when-unplugged.lua";
+            type = "script/lua";
+          }
+        ];
+      };
+
       extraLv2Packages = with pkgs; [
         bankstown-lv2
         swh_lv2
