@@ -81,6 +81,10 @@
         overlays.default = final: _prev: {
           kait2en = (final.callPackage ./apps { }) // {
             kernelModulesFor = kernel: final.callPackage ./modules { inherit kernel; };
+            # The ALSA UCM2 tree carrying the Apple T2 split-channel profiles
+            # (stock alsa-ucm-conf + our AppleT2 use cases). The
+            # t2-apple-audio-dsp NixOS module points ALSA_CONFIG_UCM2 at it.
+            t2bce_audio-alsa-ucm-conf = final.callPackage ./nix/pkgs/t2bce_audio-alsa-ucm-conf { };
             # Stock 7.0 + the SPI-HID ABI patch the T2 HID modules need.
             # Applied directly (not callPackage) so the kernel's own chainable
             # `.override` survives for linuxPackagesFor/boot.kernelPackages.
@@ -113,6 +117,7 @@
           # symbols.
           kernelModules = stripCallPackage (pkgs.callPackage ./modules { kernel = kait2enKernel; });
           apps = stripCallPackage (pkgs.callPackage ./apps { });
+          audioUcmConf = pkgs.callPackage ./nix/pkgs/t2bce_audio-alsa-ucm-conf { };
         in
         {
           # The automatic Wi-Fi/Bluetooth firmware is deliberately *not* a
@@ -126,6 +131,8 @@
             // {
               # The patched KaiT2en kernel (stock 7.0 + SPI-HID ABI patch).
               kernel = kait2enKernel;
+              inherit audioUcmConf;
+              t2bce_audio-alsa-ucm-conf = audioUcmConf;
             };
 
           formatter = pkgs.nixfmt-rfc-style;
