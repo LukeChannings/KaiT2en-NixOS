@@ -24,6 +24,11 @@
   hardware.kait2en = {
     enable = true;
     firmware.enable = true;
+    # Integrated Ice Lake graphics only — no AMD dGPU, so leave amdgpuAspm off.
+    # Ice Lake integrated Thunderbolt (8086:8a0d/8a17): upstream removes the
+    # acpi_osi overrides here (they break hotplug on this Thunderbolt
+    # generation).
+    acpiOsiOverride = false;
   };
 
   services.kait2en-suspend.enable = true;

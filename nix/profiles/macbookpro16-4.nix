@@ -22,6 +22,12 @@
   hardware.kait2en = {
     enable = true;
     firmware.enable = true;
+    # Radeon Pro 5600M dGPU — one of the models the installer enables AMDGPU
+    # ASPM on (amdgpu.aspm=1).
+    amdgpuAspm = true;
+    # Titan Ridge Thunderbolt (8086:15e8/15eb): upstream removes the acpi_osi
+    # overrides here (they break hotplug on this Thunderbolt generation).
+    acpiOsiOverride = false;
   };
 
   services.kait2en-suspend.enable = true;
