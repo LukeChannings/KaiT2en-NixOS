@@ -6,7 +6,6 @@
  */
 
 #include <linux/align.h>
-#include <linux/atomic.h>
 #include <linux/array_size.h>
 #include <linux/bitops.h>
 #include <linux/bug.h>
@@ -18,7 +17,7 @@
 #include <linux/types.h>
 #include <linux/unaligned.h>
 #include <linux/usb.h>
-#include <linux/workqueue.h>
+#include <linux/version.h>
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
@@ -35,6 +34,10 @@
 #include <drm/drm_plane.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 2, 0)
+#define drm_atomic_commit drm_atomic_state
+#endif
 
 #define APPLETBDRM_PIXEL_FORMAT		cpu_to_le32(0x52474241) /* RGBA, the actual format is BGR888 */
 #define APPLETBDRM_BITS_PER_PIXEL	24
@@ -152,66 +155,6 @@ static inline struct appletbdrm_plane_state *to_appletbdrm_plane_state(struct dr
 	return container_of(state, struct appletbdrm_plane_state, base.base);
 }
 
-struct appletbdrm_reset_work {
-	struct work_struct work;
-	struct usb_device *udev;
-};
-
-static atomic_t appletbdrm_reset_pending = ATOMIC_INIT(0);
-
-static void appletbdrm_reset_device_work(struct work_struct *work)
-{
-	struct appletbdrm_reset_work *reset_work =
-		container_of(work, struct appletbdrm_reset_work, work);
-	struct usb_device *udev = reset_work->udev;
-	int ret;
-
-	ret = usb_lock_device_for_reset(udev, NULL);
-	if (ret < 0) {
-		dev_warn(&udev->dev, "appletbdrm: failed to lock device for reset (%d)\n", ret);
-		goto out;
-	}
-
-	dev_warn(&udev->dev, "appletbdrm: resetting device after timed out transfer\n");
-	ret = usb_reset_device(udev);
-	if (ret)
-		dev_warn(&udev->dev, "appletbdrm: device reset failed (%d)\n", ret);
-
-	usb_unlock_device(udev);
-
-out:
-	atomic_set(&appletbdrm_reset_pending, 0);
-	usb_put_dev(udev);
-	kfree(reset_work);
-}
-
-static void appletbdrm_queue_reset(struct appletbdrm_device *adev, const char *reason, int ret)
-{
-	struct drm_device *drm = &adev->drm;
-	struct usb_device *udev = adev_to_udev(adev);
-	struct appletbdrm_reset_work *reset_work;
-
-	if (ret != -ETIMEDOUT)
-		return;
-
-	if (atomic_xchg(&appletbdrm_reset_pending, 1)) {
-		drm_warn(drm, "%s timed out; USB reset already pending\n", reason);
-		return;
-	}
-
-	reset_work = kzalloc(sizeof(*reset_work), GFP_KERNEL);
-	if (!reset_work) {
-		atomic_set(&appletbdrm_reset_pending, 0);
-		return;
-	}
-
-	INIT_WORK(&reset_work->work, appletbdrm_reset_device_work);
-	reset_work->udev = usb_get_dev(udev);
-
-	drm_warn(drm, "%s timed out; scheduling USB device reset\n", reason);
-	schedule_work(&reset_work->work);
-}
-
 static int appletbdrm_send_request(struct appletbdrm_device *adev,
 				   struct appletbdrm_msg_request_header *request, size_t size)
 {
@@ -223,7 +166,6 @@ static int appletbdrm_send_request(struct appletbdrm_device *adev,
 			   request, size, &actual_size, APPLETBDRM_BULK_MSG_TIMEOUT);
 	if (ret) {
 		drm_err(drm, "Failed to send message (%d)\n", ret);
-		appletbdrm_queue_reset(adev, "send message", ret);
 		return ret;
 	}
 
@@ -250,7 +192,6 @@ retry:
 			   response, size, &actual_size, APPLETBDRM_BULK_MSG_TIMEOUT);
 	if (ret) {
 		drm_err(drm, "Failed to read response (%d)\n", ret);
-		appletbdrm_queue_reset(adev, "read response", ret);
 		return ret;
 	}
 
@@ -380,7 +321,7 @@ static const u32 appletbdrm_primary_plane_formats[] = {
 };
 
 static int appletbdrm_primary_plane_helper_atomic_check(struct drm_plane *plane,
-						   struct drm_atomic_state *state)
+						   struct drm_atomic_commit *state)
 {
 	struct drm_plane_state *new_plane_state = drm_atomic_get_new_plane_state(state, plane);
 	struct drm_plane_state *old_plane_state = drm_atomic_get_old_plane_state(state, plane);
@@ -532,7 +473,7 @@ end_fb_cpu_access:
 }
 
 static void appletbdrm_primary_plane_helper_atomic_update(struct drm_plane *plane,
-						     struct drm_atomic_state *old_state)
+						     struct drm_atomic_commit *old_state)
 {
 	struct appletbdrm_device *adev = drm_to_adev(plane->dev);
 	struct drm_device *drm = plane->dev;
@@ -549,7 +490,7 @@ static void appletbdrm_primary_plane_helper_atomic_update(struct drm_plane *plan
 }
 
 static void appletbdrm_primary_plane_helper_atomic_disable(struct drm_plane *plane,
-							   struct drm_atomic_state *state)
+							   struct drm_atomic_commit *state)
 {
 	struct drm_device *dev = plane->dev;
 	struct appletbdrm_device *adev = drm_to_adev(dev);
@@ -679,7 +620,7 @@ DEFINE_DRM_GEM_FOPS(appletbdrm_drm_fops);
 static const struct drm_driver appletbdrm_drm_driver = {
 	DRM_GEM_SHMEM_DRIVER_OPS,
 	.name			= "t2bdrm",
-	.desc			= "Kait2en T2 Touch Bar DRM Driver",
+	.desc			= "KaiT2en T2 Touch Bar DRM Driver",
 	.major			= 1,
 	.minor			= 0,
 	.driver_features	= DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC,

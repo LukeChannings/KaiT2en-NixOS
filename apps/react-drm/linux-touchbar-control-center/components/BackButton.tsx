@@ -1,8 +1,8 @@
 import React from 'react';
 import { Button } from 'react-drm';
 import { MdCancel } from 'react-icons/md';
-import { useLayers } from '../layers';
-import type { LayerAnimation, SwitchOptions } from '../layers';
+import { useLayers } from '@/layers';
+import type { LayerAnimation, SwitchOptions } from '@/layers';
 
 export function BackButton({
   to = 'splitted',
@@ -21,7 +21,7 @@ export function BackButton({
       style={{ alignItems: 'center', justifyContent: 'center' }}
       onClick={() => go(to, switchOptions ?? animation)}
     >
-      <MdCancel style={{ width: 40, height: 40 }} fill="#cccccc" stroke="none" />
+      <MdCancel style={{ width: 32, height: 32 }} fill="#cccccc" stroke="none" />
     </Button>
   );
 }

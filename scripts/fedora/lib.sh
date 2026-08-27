@@ -9,6 +9,10 @@ info() {
 	printf '[kait2en] %s\n' "$*"
 }
 
+warn() {
+	printf '[kait2en] warning: %s\n' "$*" >&2
+}
+
 fail() {
 	printf '[kait2en] error: %s\n' "$*" >&2
 	exit 1
@@ -40,6 +44,16 @@ require_command() {
 
 kernel_release() {
 	printf '%s\n' "${KERNEL_RELEASE:-$(uname -r)}"
+}
+
+require_kernel_headers() {
+	local release
+	# install_module calls dkms without -k, so the build always targets the
+	# running kernel whatever KERNEL_RELEASE says.
+	release="$(uname -r)"
+
+	[[ -d "/lib/modules/$release/build" ]] ||
+		fail "kernel-devel-$release is missing; run install-dependencies.sh first"
 }
 
 require_min_kernel() {

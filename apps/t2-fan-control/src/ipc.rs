@@ -6,9 +6,9 @@ use std::{
 };
 
 use crate::{
-    config::{normalize_curve, AppConfig, CurvePoint, PresetKind},
+    config::{normalize_curve, AppConfig, CurvePoint, MIN_SOAK_TEMP_C, MAX_SOAK_TEMP_C},
     error::{FanControlError, Result},
-    sysfs::FanEndpoint,
+    sysfs::{FanEndpoint, TemperatureRole, TemperatureSource},
 };
 
 pub const SOCKET_DIR: &str = "/run/t2-fancontrol";
@@ -24,15 +24,32 @@ pub struct FanStatus {
 }
 
 #[derive(Clone, Debug, Default)]
+pub struct SensorChoice { pub key: String, pub name: String }
+
+#[derive(Clone, Debug, Default)]
 pub struct DaemonState {
     pub status: String,
     pub control_active: bool,
     pub autostart_enabled: bool,
-    pub active_preset: PresetKind,
+    pub soak_temp_c: u8,
+    pub system_cooling_time_s: u16,
+    pub any_sensor_enabled: bool,
+    pub any_sensor_temp_c: u8,
     pub custom_curve: Vec<CurvePoint>,
+    pub curve_sensor_key: Option<String>,
+    pub sensor_choices: Vec<SensorChoice>,
     pub cpu_temp_c: Option<u8>,
     pub gpu_temp_c: Option<u8>,
     pub effective_temp_c: Option<u8>,
+    pub hottest_sensor_name: Option<String>,
+    pub optional_curve_temp_c: Option<u8>,
+    pub overall_hottest_temp_c: Option<u8>,
+    pub overall_hottest_sensor_name: Option<String>,
+    pub system_temp_c: Option<u8>,
+    pub system_sensor_count: usize,
+    pub monitored_sensor_count: usize,
+    pub heat_soak_cooling: bool,
+    pub any_sensor_cooling: bool,
     pub target_percent: Option<u8>,
     pub fans: Vec<FanStatus>,
 }
@@ -42,8 +59,10 @@ pub enum Request {
     GetState,
     SetActive(bool),
     SetAutostart(bool),
-    SetPreset(PresetKind),
-    SetCurve(Vec<CurvePoint>),
+    SetCurve(u8, Vec<CurvePoint>),
+    SetAnySensor(bool, u8),
+    SetSystemCoolingTime(u16),
+    SetCurveSensor(Option<String>),
 }
 
 pub fn bind_listener() -> Result<UnixListener> {
@@ -71,9 +90,6 @@ pub fn bind_listener() -> Result<UnixListener> {
         path: socket_path.to_path_buf(),
         source,
     })?;
-    listener
-        .set_nonblocking(true)
-        .map_err(FanControlError::ProcessSpawn)?;
     fs::set_permissions(socket_path, fs::Permissions::from_mode(0o666)).map_err(|source| {
         FanControlError::Io {
             path: socket_path.to_path_buf(),
@@ -107,14 +123,30 @@ pub fn handle_request_line(line: &str) -> Result<Request> {
     if let Some(value) = line.strip_prefix("SET_AUTOSTART ") {
         return Ok(Request::SetAutostart(parse_bool_flag(value)?));
     }
-    if let Some(value) = line.strip_prefix("SET_PRESET ") {
-        let preset = PresetKind::from_str(value.trim())
-            .ok_or_else(|| protocol_error(format!("invalid preset: {value}")))?;
-        return Ok(Request::SetPreset(preset));
-    }
     if let Some(value) = line.strip_prefix("SET_CURVE ") {
-        let curve = parse_curve(value)?;
-        return Ok(Request::SetCurve(curve));
+        let (soak, points) = value.split_once(' ')
+            .ok_or_else(|| protocol_error(String::from("missing system temperature target")))?;
+        let soak = soak.parse::<u8>().map_err(|_| protocol_error(format!("invalid system temperature target: {soak}")))?
+            .clamp(MIN_SOAK_TEMP_C, MAX_SOAK_TEMP_C);
+        let curve = parse_curve(points)?;
+        return Ok(Request::SetCurve(soak, curve));
+    }
+    if let Some(value) = line.strip_prefix("SET_ANY_SENSOR ") {
+        let (enabled, temp) = value.split_once(' ')
+            .ok_or_else(|| protocol_error(String::from("missing any-sensor temperature")))?;
+        let enabled = parse_bool_flag(enabled)?;
+        let temp = temp.parse::<u8>().map_err(|_| protocol_error(format!("invalid any-sensor temperature: {temp}")))?.min(100);
+        return Ok(Request::SetAnySensor(enabled, temp));
+    }
+    if let Some(value) = line.strip_prefix("SET_SYSTEM_COOLING_TIME ") {
+        let seconds = value.parse::<u16>()
+            .map_err(|_| protocol_error(format!("invalid system cooling time: {value}")))?
+            .min(600);
+        return Ok(Request::SetSystemCoolingTime(seconds));
+    }
+    if let Some(value) = line.strip_prefix("SET_CURVE_SENSOR ") {
+        let value = value.trim();
+        return Ok(Request::SetCurveSensor((value != "NONE").then(|| value.to_owned())));
     }
 
     Err(protocol_error(format!("unknown request: {line}")))
@@ -138,15 +170,33 @@ pub fn write_response(mut stream: &UnixStream, state: &DaemonState) -> Result<()
         "autostart_enabled",
         if state.autostart_enabled { "1" } else { "0" },
     );
-    push_field(&mut body, "active_preset", state.active_preset.as_str());
+    push_field(&mut body, "system_temp_target_c", &state.soak_temp_c.to_string());
+    push_field(&mut body, "system_cooling_time_s", &state.system_cooling_time_s.to_string());
+    push_field(&mut body, "any_sensor_enabled", if state.any_sensor_enabled { "1" } else { "0" });
+    push_field(&mut body, "any_sensor_temp_c", &state.any_sensor_temp_c.to_string());
     push_field(
         &mut body,
         "custom_curve",
         &format_curve(&state.custom_curve),
     );
+    push_field(&mut body, "curve_sensor_key", state.curve_sensor_key.as_deref().unwrap_or(""));
+    push_field(&mut body, "sensor_count", &state.sensor_choices.len().to_string());
+    for (index, sensor) in state.sensor_choices.iter().enumerate() {
+        push_field(&mut body, &format!("sensor.{index}.key"), &sensor.key);
+        push_field(&mut body, &format!("sensor.{index}.name"), &sensor.name);
+    }
     push_option_u8(&mut body, "cpu_temp_c", state.cpu_temp_c);
     push_option_u8(&mut body, "gpu_temp_c", state.gpu_temp_c);
     push_option_u8(&mut body, "effective_temp_c", state.effective_temp_c);
+    push_field(&mut body, "hottest_sensor_name", state.hottest_sensor_name.as_deref().unwrap_or(""));
+    push_option_u8(&mut body, "optional_curve_temp_c", state.optional_curve_temp_c);
+    push_option_u8(&mut body, "overall_hottest_temp_c", state.overall_hottest_temp_c);
+    push_field(&mut body, "overall_hottest_sensor_name", state.overall_hottest_sensor_name.as_deref().unwrap_or(""));
+    push_option_u8(&mut body, "system_temp_c", state.system_temp_c);
+    push_field(&mut body, "system_sensor_count", &state.system_sensor_count.to_string());
+    push_field(&mut body, "monitored_sensor_count", &state.monitored_sensor_count.to_string());
+    push_field(&mut body, "heat_soak_cooling", if state.heat_soak_cooling { "1" } else { "0" });
+    push_field(&mut body, "any_sensor_cooling", if state.any_sensor_cooling { "1" } else { "0" });
     push_option_u8(&mut body, "target_percent", state.target_percent);
     push_field(&mut body, "fan_count", &state.fans.len().to_string());
     for (index, fan) in state.fans.iter().enumerate() {
@@ -189,16 +239,36 @@ pub fn write_error(mut stream: &UnixStream, message: &str) -> Result<()> {
     stream.flush().map_err(FanControlError::ProcessSpawn)
 }
 
-pub fn state_from(config: &AppConfig, status: String, temps: (Option<u8>, Option<u8>, Option<u8>), target_percent: Option<u8>, fans: &[FanEndpoint]) -> DaemonState {
+pub fn state_from(config: &AppConfig, status: String, temps: (Option<u8>, Option<u8>, Option<u8>, Option<String>, Option<u8>, Option<u8>, Option<String>, Option<u8>, usize, usize, bool, bool), target_percent: Option<u8>, fans: &[FanEndpoint], temperatures: &[TemperatureSource]) -> DaemonState {
+    let mut sensor_choices = temperatures.iter()
+        .filter(|source| source.role == TemperatureRole::System && source.last_temp_c.is_some_and(|temp| temp > 0))
+        .map(|source| SensorChoice { key: source.key.clone(), name: source.name.clone() })
+        .collect::<Vec<_>>();
+    sensor_choices.sort_by_key(|sensor| sensor.name.to_lowercase());
+
     DaemonState {
         status,
         control_active: config.automatic_control_enabled,
         autostart_enabled: config.autostart_enabled,
-        active_preset: config.active_preset,
+        soak_temp_c: config.soak_temp_c,
+        system_cooling_time_s: config.system_cooling_time_s,
+        any_sensor_enabled: config.any_sensor_enabled,
+        any_sensor_temp_c: config.any_sensor_temp_c,
         custom_curve: config.custom_curve.clone(),
+        curve_sensor_key: config.curve_sensor_key.clone(),
+        sensor_choices,
         cpu_temp_c: temps.0,
         gpu_temp_c: temps.1,
         effective_temp_c: temps.2,
+        hottest_sensor_name: temps.3,
+        optional_curve_temp_c: temps.4,
+        overall_hottest_temp_c: temps.5,
+        overall_hottest_sensor_name: temps.6,
+        system_temp_c: temps.7,
+        system_sensor_count: temps.8,
+        monitored_sensor_count: temps.9,
+        heat_soak_cooling: temps.10,
+        any_sensor_cooling: temps.11,
         target_percent,
         fans: fans
             .iter()
@@ -217,6 +287,7 @@ fn decode_response<R: BufRead>(mut reader: R) -> Result<DaemonState> {
     let mut line = String::new();
     let mut state = DaemonState::default();
     let mut fan_entries: Vec<FanStatus> = Vec::new();
+    let mut sensor_entries: Vec<SensorChoice> = Vec::new();
     let mut ok = true;
     let mut error_message = None;
 
@@ -238,14 +309,27 @@ fn decode_response<R: BufRead>(mut reader: R) -> Result<DaemonState> {
             "status" => state.status = unescape(value),
             "control_active" => state.control_active = parse_bool_flag(value)?,
             "autostart_enabled" => state.autostart_enabled = parse_bool_flag(value)?,
-            "active_preset" => {
-                state.active_preset = PresetKind::from_str(value)
-                    .ok_or_else(|| protocol_error(format!("invalid preset in response: {value}")))?;
-            }
+            "system_temp_target_c" | "system_temp_limit_c" | "soak_temp_c" => state.soak_temp_c = value.parse::<u8>()
+                .map_err(|_| protocol_error(format!("invalid system temperature target: {value}")))?,
+            "system_cooling_time_s" => state.system_cooling_time_s = value.parse::<u16>()
+                .map_err(|_| protocol_error(format!("invalid system cooling time: {value}")))?,
+            "any_sensor_enabled" => state.any_sensor_enabled = parse_bool_flag(value)?,
+            "any_sensor_temp_c" => state.any_sensor_temp_c = value.parse::<u8>().map_err(|_| protocol_error(format!("invalid any-sensor temperature: {value}")))?,
             "custom_curve" => state.custom_curve = parse_curve(value)?,
+            "curve_sensor_key" => state.curve_sensor_key = (!value.is_empty()).then(|| unescape(value)),
+            "sensor_count" => sensor_entries.resize(value.parse::<usize>().map_err(|_| protocol_error(format!("invalid sensor_count: {value}")))?, SensorChoice::default()),
             "cpu_temp_c" => state.cpu_temp_c = parse_option_u8(value)?,
             "gpu_temp_c" => state.gpu_temp_c = parse_option_u8(value)?,
             "effective_temp_c" => state.effective_temp_c = parse_option_u8(value)?,
+            "hottest_sensor_name" => state.hottest_sensor_name = (!value.is_empty()).then(|| unescape(value)),
+            "optional_curve_temp_c" => state.optional_curve_temp_c = parse_option_u8(value)?,
+            "overall_hottest_temp_c" => state.overall_hottest_temp_c = parse_option_u8(value)?,
+            "overall_hottest_sensor_name" => state.overall_hottest_sensor_name = (!value.is_empty()).then(|| unescape(value)),
+            "system_temp_c" => state.system_temp_c = parse_option_u8(value)?,
+            "system_sensor_count" => state.system_sensor_count = value.parse::<usize>().map_err(|_| protocol_error(format!("invalid sensor count: {value}")))?,
+            "monitored_sensor_count" => state.monitored_sensor_count = value.parse::<usize>().map_err(|_| protocol_error(format!("invalid monitored sensor count: {value}")))?,
+            "heat_soak_cooling" => state.heat_soak_cooling = parse_bool_flag(value)?,
+            "any_sensor_cooling" => state.any_sensor_cooling = parse_bool_flag(value)?,
             "target_percent" => state.target_percent = parse_option_u8(value)?,
             "fan_count" => {
                 let count = value.parse::<usize>().map_err(|_| {
@@ -254,6 +338,7 @@ fn decode_response<R: BufRead>(mut reader: R) -> Result<DaemonState> {
                 fan_entries.resize(count, FanStatus::default());
             }
             _ if key.starts_with("fan.") => apply_fan_field(key, value, &mut fan_entries)?,
+            _ if key.starts_with("sensor.") => apply_sensor_field(key, value, &mut sensor_entries)?,
             _ => {}
         }
     }
@@ -264,7 +349,23 @@ fn decode_response<R: BufRead>(mut reader: R) -> Result<DaemonState> {
         ));
     }
     state.fans = fan_entries;
+    state.sensor_choices = sensor_entries;
     Ok(state)
+}
+
+fn apply_sensor_field(key: &str, value: &str, sensors: &mut [SensorChoice]) -> Result<()> {
+    let mut parts = key.split('.');
+    let _ = parts.next();
+    let index = parts.next().ok_or_else(|| protocol_error(format!("invalid sensor field: {key}")))?
+        .parse::<usize>().map_err(|_| protocol_error(format!("invalid sensor index: {key}")))?;
+    let field = parts.next().ok_or_else(|| protocol_error(format!("invalid sensor field: {key}")))?;
+    let sensor = sensors.get_mut(index).ok_or_else(|| protocol_error(format!("sensor index out of range: {index}")))?;
+    match field {
+        "key" => sensor.key = unescape(value),
+        "name" => sensor.name = unescape(value),
+        _ => {}
+    }
+    Ok(())
 }
 
 fn apply_fan_field(key: &str, value: &str, fan_entries: &mut [FanStatus]) -> Result<()> {
@@ -313,8 +414,10 @@ fn encode_request(request: &Request) -> String {
         Request::GetState => String::from("GET_STATE\n"),
         Request::SetActive(enabled) => format!("SET_ACTIVE {}\n", bool_flag(*enabled)),
         Request::SetAutostart(enabled) => format!("SET_AUTOSTART {}\n", bool_flag(*enabled)),
-        Request::SetPreset(preset) => format!("SET_PRESET {}\n", preset.as_str()),
-        Request::SetCurve(curve) => format!("SET_CURVE {}\n", format_curve(curve)),
+        Request::SetCurve(soak, curve) => format!("SET_CURVE {soak} {}\n", format_curve(curve)),
+        Request::SetAnySensor(enabled, temp) => format!("SET_ANY_SENSOR {} {temp}\n", bool_flag(*enabled)),
+        Request::SetSystemCoolingTime(seconds) => format!("SET_SYSTEM_COOLING_TIME {seconds}\n"),
+        Request::SetCurveSensor(key) => format!("SET_CURVE_SENSOR {}\n", key.as_deref().unwrap_or("NONE")),
     }
 }
 

@@ -21,6 +21,10 @@ modules.order
 # Rust build output
 target/
 
+# Python bytecode
+__pycache__/
+*.pyc
+
 # Node build output
 node_modules/
 dist/
@@ -28,3 +32,5 @@ build/
 
 # Local generated files
 compile_commands.json
+.vscode/settings.json
+/website/build/

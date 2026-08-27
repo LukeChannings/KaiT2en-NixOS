@@ -12,11 +12,22 @@ import { LayoutContext } from '../scene/layout-context';
 import { DisplaySizeContext, NativeDrawContext } from '../scene/display-context';
 import type { NativeDraw } from '../scene/display-context';
 import { TouchReader, getTouchDevicePath } from '../native/input';
-import { KeyboardReader, findKeyboardDevices, findPointerDevices, findLidDevice } from '../native/keyboard';
+import {
+  KeyboardReader,
+  findKeyboardDevices,
+  findPointerDevices,
+  findLidDevice,
+  readLidClosed,
+} from '../native/keyboard';
 import type { SceneNode, RootContainer } from '../scene/types';
 import type { LayoutBox } from '../scene/layout';
-import type { DrmDisplay } from '../native/binding';
+import type { Display } from '../native/binding';
 import { TOUCHBAR_BACKLIGHT_NAMES, DISPLAY_BACKLIGHT_NAMES } from '../native/hardware';
+import { createLogger } from '../logger';
+
+const log = createLogger('renderer');
+const backlightLog = createLogger('backlight');
+const profileLog = createLogger('profile');
 
 export interface RenderOptions {
   /**
@@ -61,6 +72,15 @@ export interface RenderOptions {
   flushFps?: number;
 
   partialFlush?: boolean;
+
+  /**
+   * Open the native Touch Bar touchpad and wire its gestures into the touch
+   * registry. Default: true. Set false when there's no real Touch Bar to read
+   * from (e.g. the browser preview backend, which drives touch input over
+   * its own WebSocket connection instead) — otherwise the renderer retries
+   * the open forever on the INPUT_RETRY_MS cadence, logging a warning each time.
+   */
+  touchEnabled?: boolean;
 }
 
 export interface RenderResult {
@@ -200,6 +220,7 @@ function watchEvdev(
   enumerate: () => string[],
   onEvent: (type: number, code: number, value: number) => void,
 ): () => void {
+  const log = createLogger(label);
   let stopped = false;
   let enumRetries = 0;
   let enumTimer: ReturnType<typeof setTimeout> | null = null;
@@ -221,13 +242,13 @@ function watchEvdev(
         chunk => parseEvdev(carry, chunk, onEvent),
         err => {
           if (stopped) return;
-          console.warn(`[react-drm] ${label}: ${dev}: ${err.message}`);
+          log.warn(`${dev}: ${err.message}`);
           if (streamStop) { streamStop(); streamStop = null; }
           if (attempts < INPUT_RETRY_MAX) {
             attempts++;
             retryTimer = setTimeout(() => { retryTimer = null; start(); }, INPUT_RETRY_MS);
           } else {
-            console.warn(`[react-drm] ${label}: ${dev}: giving up after ${attempts} reopen attempts`);
+            log.warn(`${dev}: giving up after ${attempts} reopen attempts`);
           }
         },
         () => { attempts = 0; }, // clean open — reset the reopen budget
@@ -257,7 +278,7 @@ function watchEvdev(
         enumRetries++;
         enumTimer = setTimeout(() => { enumTimer = null; reconcile(true); }, INPUT_RETRY_MS);
       } else if (initial) {
-        console.warn(`[react-drm] ${label}: no devices found, giving up after ${enumRetries} retries`);
+        log.warn(`no devices found, giving up after ${enumRetries} retries`);
       }
       return;
     }
@@ -272,7 +293,7 @@ function watchEvdev(
       if (!want.has(dev)) { deviceStops.get(dev)!(); deviceStops.delete(dev); changed = true; }
     }
     if (changed) {
-      console.log(`[react-drm] ${label}: monitoring ${[...deviceStops.keys()].join(', ') || '(none)'}`);
+      log.info(`monitoring ${[...deviceStops.keys()].join(', ') || '(none)'}`);
     }
   }
 
@@ -286,7 +307,7 @@ function watchEvdev(
       hotplugTimer = setTimeout(() => { hotplugTimer = null; reconcile(false); }, 300);
     });
   } catch (e) {
-    console.warn(`[react-drm] ${label}: hotplug watch unavailable: ${(e as NodeJS.ErrnoException).message}`);
+    log.warn(`hotplug watch unavailable: ${(e as NodeJS.ErrnoException).message}`);
   }
 
   reconcile(true);
@@ -325,10 +346,39 @@ function watchKeyboard(onActivity: () => void): () => void {
 // Lid: EV_SW + SW_LID — value 1 = closed, 0 = open. Single-device, wrapped to the
 // array contract the helper expects.
 function watchLid(onLid: (closed: boolean) => void): () => void {
+  let lastState: boolean | undefined;
+  let stateReadWarningShown = false;
+
   return watchEvdev(
     'watchLid',
-    () => { try { const d = findLidDevice(); return d ? [d] : []; } catch { return []; } },
-    (type, code, value) => { if (type === 5 && code === 0) onLid(value === 1); },
+    () => {
+      try {
+        const device = findLidDevice();
+        try {
+          const closed = readLidClosed(device);
+          if (closed !== lastState) {
+            lastState = closed;
+            console.log(`[react-drm] lid is ${closed ? 'closed' : 'open'}`);
+            onLid(closed);
+          }
+        } catch (e) {
+          if (!stateReadWarningShown) {
+            stateReadWarningShown = true;
+            console.warn('[react-drm] could not read initial lid state:', (e as Error).message);
+          }
+        }
+        return [device];
+      } catch {
+        return [];
+      }
+    },
+    (type, code, value) => {
+      if (type !== 5 || code !== 0) return;
+      const closed = value === 1;
+      if (closed === lastState) return;
+      lastState = closed;
+      onLid(closed);
+    },
   );
 }
 
@@ -339,17 +389,16 @@ function watchLid(onLid: (closed: boolean) => void): () => void {
 const TB_BACKLIGHT_NAMES  = TOUCHBAR_BACKLIGHT_NAMES;
 const DISP_BACKLIGHT_NAMES = DISPLAY_BACKLIGHT_NAMES;
 
-// After resume the appletb_backlight HID interface re-binds late; re-apply and
-// verify the level on this cadence until the panel confirms it (or the window
-// expires — past that, the self-healing write() fixes it on the next wake/dim).
-const SETTLE_INTERVAL_MS = 1000;
-const SETTLE_WINDOW_MS   = 20_000;
-
 function findBacklightDir(candidates: readonly string[]): string | null {
   try {
     const base = '/sys/class/backlight';
-    const name = fs.readdirSync(base).find(n => candidates.some(c => n.includes(c)));
-    return name ? `${base}/${name}` : null;
+    const names = fs.readdirSync(base);
+    for (const candidate of candidates) {
+      const name = names.find(n => n === candidate)
+        ?? names.find(n => n.includes(candidate));
+      if (name) return `${base}/${name}`;
+    }
+    return null;
   } catch { return null; }
 }
 
@@ -365,7 +414,6 @@ class Backlight {
   private dispMax:  number;
   private lidClosed = false;
   private activeHwLevel = 2; // raw level currently written while active
-  private settleTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     this.tbDir   = findBacklightDir(TB_BACKLIGHT_NAMES);
@@ -376,9 +424,9 @@ class Backlight {
     this.dispMax  = dispDir ? readInt(`${dispDir}/max_brightness`) : 0;
   }
 
-  // Re-resolve the Touch Bar backlight node. After S3 resume the
-  // appletb_backlight HID interface re-binds a beat after the appletbdrm card
-  // attachTouchBar() waits for, so the cached path can be null or stale.
+  // Re-resolve the Touch Bar backlight node after the USB path has resumed.
+  // The node normally remains bound across stateful S3, but may be replaced
+  // when recovery causes the Touch Bar device to re-enumerate.
   private resolveTb(): void {
     this.tbDir  = findBacklightDir(TB_BACKLIGHT_NAMES);
     this.tbFile = this.tbDir ? `${this.tbDir}/brightness` : null;
@@ -393,7 +441,7 @@ class Backlight {
     if (!this.tbFile) return;
     try { fs.writeFileSync(this.tbFile, String(Math.round(value))); } catch (e) {
       this.tbFile = null; // drop the stale path so the next write re-resolves
-      console.warn('[react-drm] backlight write failed (need root?):', (e as NodeJS.ErrnoException).code);
+      backlightLog.warn('write failed (need root?):', (e as NodeJS.ErrnoException).code);
     }
   }
 
@@ -435,10 +483,9 @@ class Backlight {
   }
 
   /**
-   * Re-resolve the backlight sysfs paths after the device re-enumerated
-   * (e.g. after S3 suspend/resume).  The DRM card re-uses DrmDisplay.reopen();
-   * the backlight needs the same treatment so the cached tbFile/dispFile paths
-   * don't point at a stale or not-yet-available node.
+   * Re-resolve the backlight sysfs paths after resume. The nodes normally
+   * remain stable, but recovery may replace them while the DRM display is
+   * reopened.
    */
   reopen(): void {
     this.resolveTb();
@@ -450,35 +497,6 @@ class Backlight {
     this.activeHwLevel = 2; // reset tracking — hardware state is unknown after re-enumeration
   }
 
-  /**
-   * Apply the active level after resume and keep re-applying until the panel
-   * confirms it. The appletb_backlight node may still be absent (write no-ops)
-   * or get reset to its probe default (level 1 = "50%") as the HID interface
-   * re-enumerates during attachTouchBar()'s config reprobes. A single on() in
-   * resume() therefore races the re-bind and can leave the backlight stuck at
-   * the default. Verify against actual_brightness and retry on a short schedule.
-   */
-  onVerified(adaptive: boolean, level: 0 | 1 | 2): void {
-    this.stopSettle();
-    const deadline = Date.now() + SETTLE_WINDOW_MS;
-    const apply = (): void => {
-      this.on(adaptive, level);
-      const actual = this.tbDir ? readInt(`${this.tbDir}/actual_brightness`) : -1;
-      const settled = !!this.tbFile && actual === this.activeHwLevel;
-      // Stop once the panel confirms the level, or after the window expires.
-      // Past the window the self-healing write() is the safety net: the next
-      // wake()/dim() re-resolves the node and lands the write anyway.
-      if (settled || Date.now() > deadline) this.stopSettle();
-    };
-    apply();
-    if (!this.settleTimer) this.settleTimer = setInterval(apply, SETTLE_INTERVAL_MS);
-  }
-
-  private stopSettle(): void {
-    if (this.settleTimer) { clearInterval(this.settleTimer); this.settleTimer = null; }
-  }
-
-  stop(): void { this.stopSettle(); }
 }
 
 // ── Pixel shift (AMOLED burn-in protection) ───────────────────────────────────
@@ -491,15 +509,16 @@ class Backlight {
 
 export function render(
   element: React.ReactNode,
-  display: DrmDisplay,
+  display: Display,
   options: RenderOptions = {},
 ): RenderResult {
   // Resolve timing — support deprecated screenSaverSecs as alias for dimSecs
   const dimMs = ((options.dimSecs ?? options.screenSaverSecs) ?? 0) * 1000;
   const offMs = ((options.offSecs ?? options.dimSecs ?? options.screenSaverSecs) ?? 0) * 1000;
 
-  const adaptive    = options.adaptiveBrightness ?? false;
-  const activeLevel = options.activeBrightness ?? 2;
+  const adaptive     = options.adaptiveBrightness ?? false;
+  const activeLevel  = options.activeBrightness ?? 2;
+  const touchEnabled = options.touchEnabled ?? true;
   const backlight = new Backlight();
 
   const registry  = new TouchRegistry();
@@ -514,9 +533,16 @@ export function render(
   };
 
   // ── Pixel shift ───────────────────────────────────────────────────────────
+  // Same formula/movement as originally shipped — sweepPhase advances by a
+  // fixed step each tick, X linear, Y sinusoidal, pause at each endpoint.
+  // Only the tick interval changed: 60s instead of 200ms. This is anti-burn-in
+  // drift, not animation, so sub-minute timing has no perceptible effect, and
+  // a real (rounded) position change happens at most every several seconds
+  // anyway — a 60s poll just means the CPU wakes for it once a minute instead
+  // of five times a second.
   const MAX_X_SHIFT    = 11;
   const MAX_Y_SHIFT    = 2;
-  const SWEEP_STEP_MS  = 50;
+  const SWEEP_STEP_MS  = 60000;
   const SWEEP_PAUSE_MS = 1000;
   const randPhaseY     = Math.random() * Math.PI * 2;
   const psMs           = (options.pixelShiftSecs ?? 300) * 1000; // one-direction sweep duration
@@ -524,8 +550,12 @@ export function render(
   let sweepPhase   = 0.5;   // 0 = leftmost (−MAX_X), 1 = rightmost (+MAX_X)
   let sweepDir     = 1;
   let sweepPauseMs = 0;
-  let shiftX       = 0;
-  let shiftY       = 0;
+  // Seeded from the true value at sweepPhase, not (0,0) — with a 60s tick,
+  // waiting for the first interval fire to self-correct would leave the
+  // wrong Y offset on screen for up to a minute after every app start
+  // (X is always exactly 0 here regardless; only Y depends on randPhaseY).
+  let shiftX = Math.round((sweepPhase * 2 - 1) * MAX_X_SHIFT);
+  let shiftY = Math.round(Math.sin(sweepPhase * Math.PI * 4 + randPhaseY) * MAX_Y_SHIFT);
 
   function updateSweep(): boolean {
     if (sweepPauseMs > 0) {
@@ -550,13 +580,27 @@ export function render(
     return true;
   }
 
-  const shiftTimer = psMs > 0
-    ? setInterval(() => {
-        if (!updateSweep()) return;
-        renderCurrent();           // update display first
-        registry.setShift(shiftX, shiftY); // then sync touch coords
-      }, SWEEP_STEP_MS)
-    : null;
+  let shiftTimer: ReturnType<typeof setInterval> | null = null;
+
+  function startShiftTimer(): void {
+    if (psMs <= 0 || shiftTimer) return;
+    shiftTimer = setInterval(() => {
+      // Nothing is on screen to protect while off/suspended — belt-and-
+      // suspenders check; the timer is also fully stopped/started around
+      // these transitions below, so this shouldn't normally trigger.
+      if (suspended || state === 'off') return;
+      if (!updateSweep()) return;
+      renderCurrent();                   // update display first
+      registry.setShift(shiftX, shiftY); // then sync touch coords
+    }, SWEEP_STEP_MS);
+  }
+
+  function stopShiftTimer(): void {
+    if (shiftTimer) { clearInterval(shiftTimer); shiftTimer = null; }
+  }
+
+  registry.setShift(shiftX, shiftY); // keep touch hit-testing in sync with the seeded value above
+  startShiftTimer(); // no-op if pixelShiftSecs is 0
 
   // ── Screen-saver state ────────────────────────────────────────────────────
   type SsState = 'active' | 'dim' | 'off';
@@ -565,6 +609,7 @@ export function render(
   let lastCmds: DrawCommand[] = [];
   let dimTimer:  ReturnType<typeof setTimeout> | null = null;
   let offTimer:  ReturnType<typeof setTimeout> | null = null;
+  let lastTimerArmAt = 0;
 
   // Blit deduplication: skip display.render() when the frame is byte-identical
   // to what's already on screen (same commands + same pixel-shift). Makes idle
@@ -628,7 +673,7 @@ export function render(
 
     const c = prof.commits || 1, b = prof.blits || 1;
     const skipPct = ((prof.skippedLayout / c) * 100).toFixed(0);
-    console.log(`[profile] commits/s=${prof.commits} blits/s=${prof.blits} | `
+    profileLog.info(`commits/s=${prof.commits} blits/s=${prof.blits} | `
       + `layout(full=${prof.fullLayout}, skip=${prof.skippedLayout}, skip%=${skipPct}) | `
       + `layout=${(prof.layoutMs/c).toFixed(2)}ms ser=${(prof.serMs/c).toFixed(2)}ms blit=${(prof.blitMs/b).toFixed(2)}ms | `
       + `draw_svg/frame=${(prof.svg/c).toFixed(1)} cmds/frame=${(prof.cmds/c).toFixed(0)} | `
@@ -727,6 +772,14 @@ export function render(
   }
 
   function startIdleTimers(): void {
+    // Throttle re-arming: wake() calls this on every touch/pointer event,
+    // including every touchmove of a fast drag — resetting the same
+    // multi-second timer dozens of times a second changes nothing observable.
+    // Skip re-arming if one is already ticking from within the last second;
+    // it can fire up to ~1s earlier than a fresh dimMs would, imperceptible
+    // at these timescales.
+    if (dimTimer && performance.now() - lastTimerArmAt < 1000) return;
+    lastTimerArmAt = performance.now();
     clearTimers();
     if (dimMs <= 0) return;
 
@@ -741,6 +794,7 @@ export function render(
         state = 'off';
         backlight.off();
         display.render([{ cmd: 'clear', r: 0, g: 0, b: 0 }]);
+        stopShiftTimer(); // no screen to protect — stop the sweep timer, not just its renders
       }, offMs);
     }, dimMs);
   }
@@ -752,7 +806,10 @@ export function render(
     state = 'active';
     clearTimers();
     if (wasOff || wasInactive) backlight.on(adaptive, activeLevel);
-    if (wasOff) renderCurrent(true); // screen was cleared to black — force a repaint past the dedup cache
+    if (wasOff) {
+      renderCurrent(true); // screen was cleared to black — force a repaint past the dedup cache
+      startShiftTimer();   // idempotent — no-op if suspend() already restarted it via resume()
+    }
     startIdleTimers();
   }
 
@@ -791,7 +848,7 @@ export function render(
 
   const root = reconciler.createContainer(
     container, 0, null, false, null, 'react-drm',
-    (err: Error) => console.error('[react-drm] recoverable error:', err),
+    (err: Error) => log.error('recoverable error:', err),
     null,
   );
 
@@ -815,7 +872,7 @@ export function render(
   if (!yogaReady()) {
     loadYogaEngine()
       .then(() => doUpdate(latestEl))
-      .catch(err => console.error('[react-drm] layout engine failed to load:', err));
+      .catch(err => log.error('layout engine failed to load:', err));
   }
 
   // The evdev watchers' worker fds die silently when the devices disappear
@@ -843,6 +900,7 @@ export function render(
   let stopTouch = (): void => {};
   let touchRetryTimer: ReturnType<typeof setTimeout> | null = null;
   function startTouch(): void {
+    if (!touchEnabled) return;
     if (touchRetryTimer) { clearTimeout(touchRetryTimer); touchRetryTimer = null; }
     try {
       const touchDevice = new TouchReader({ width: display.width, height: display.height });
@@ -852,9 +910,9 @@ export function render(
         onTouchEnd:   (x, y) => { registry.touchEnd(x, y); },
       });
       stopTouch = () => { touchDevice.stop(); stopTouch = () => {}; };
-      console.log('[react-drm] touch device ready');
+      log.info('touch device ready');
     } catch (e) {
-      console.warn('[react-drm] no touch device:', (e as Error).message ?? e);
+      log.warn('no touch device:', (e as Error).message ?? e);
       if (!suspended) {
         touchRetryTimer = setTimeout(() => {
           touchRetryTimer = null;
@@ -870,16 +928,15 @@ export function render(
     suspended = true;
     if (pendingFlush) { clearTimeout(pendingFlush); pendingFlush = null; }
     clearTimers();
+    stopShiftTimer(); // no screen to protect — stop the sweep timer, not just its renders
     stopLid();
     stopPointer();
     stopTouch(); // drop the touch fd too — don't let it go stale across the teardown
     if (touchRetryTimer) { clearTimeout(touchRetryTimer); touchRetryTimer = null; } // cancel any in-flight touch retry
     if (ownKeyboardWatch) stopKeyboard();
     else options.keyboardReader?.suspend(); // release the caller's kbd fd too — don't hold it across teardown
-    backlight.stop(); // cancel any in-flight resume settle loop
-    backlight.off();
     display.close(); // device disappears during suspend — drop the fd cleanly
-    console.log('[react-drm] suspended (display closed)');
+    log.info('suspended (display closed)');
   }
 
   function resume(): void {
@@ -888,15 +945,16 @@ export function render(
     backlight.reopen(); // re-resolve sysfs paths after device re-enumeration
     suspended = false;
     state = 'active';
+    startShiftTimer(); // idempotent — no-op if already running
     stopLid = watchLid(onLid);
     stopPointer = dimMs > 0 ? watchPointer(wake) : () => {};
     if (ownKeyboardWatch) stopKeyboard = watchKeyboard(wake);
     else options.keyboardReader?.resume(); // re-open the caller's kbd fd closed in suspend()
     startTouch(); // re-open the touch fd against the re-enumerated node
-    backlight.onVerified(adaptive, activeLevel); // retry until the panel confirms — HID backlight re-binds late
+    backlight.on(adaptive, activeLevel);
     startIdleTimers();
     renderCurrent(true); // display was closed during suspend — force a repaint past the dedup cache
-    console.log('[react-drm] resumed');
+    log.info('resumed');
   }
 
   return {
@@ -905,12 +963,11 @@ export function render(
       reconciler.updateContainer(null, root, null, null);
       if (pendingFlush) { clearTimeout(pendingFlush); pendingFlush = null; }
       clearTimers();
-      if (shiftTimer) clearInterval(shiftTimer);
+      stopShiftTimer();
       stopLid();
       stopPointer();
       stopKeyboard();
       stopTouch();
-      backlight.stop(); // cancel any in-flight resume settle loop
       if (touchRetryTimer) { clearTimeout(touchRetryTimer); touchRetryTimer = null; } // cancel any in-flight touch retry
     },
     update: doUpdate,

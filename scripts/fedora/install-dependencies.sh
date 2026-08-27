@@ -11,6 +11,8 @@ KVER="$(kernel_release)"
 
 info "installing Fedora build and runtime dependencies for $KVER"
 dnf install -y \
+	acpica-tools \
+	alsa-ucm \
 	dkms \
 	gcc \
 	gcc-c++ \
@@ -22,6 +24,7 @@ dnf install -y \
 	elfutils-libelf-devel \
 	dracut \
 	grubby \
+	polkit \
 	cargo \
 	rust \
 	gtk4-devel \
@@ -30,6 +33,8 @@ dnf install -y \
 	libdrm-devel \
 	cairo-devel \
 	librsvg2-devel \
+	plymouth-plugin-two-step \
+	plymouth-theme-spinner \
 	nodejs \
 	npm \
 	brightnessctl \

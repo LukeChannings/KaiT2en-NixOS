@@ -17,9 +17,13 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/hwmon.h>
+#include <linux/hwmon-sysfs.h>
 #include <linux/io.h>
 #include <linux/err.h>
+#include <linux/ktime.h>
+#include <linux/power_supply.h>
 #include <linux/rtc.h>
+#include <linux/workqueue.h>
 
 /* MMIO register offsets for T2 SMC interface */
 #define T2SMC_IOMEM_KEY_DATA      0x0000
@@ -52,6 +56,18 @@
 #define T2SMC_CHARGE_LIMIT "BCLM"
 #define T2SMC_CHARGE_LIMIT_SW  "CHLS"
 #define T2SMC_CHARGE_LIMIT_80  "CHWA"
+#define T2SMC_BATTERY_STATUS    "BNCR"
+#define T2SMC_BATTERY_CAPACITY  "BRSC"
+#define T2SMC_BATTERY_VOLTAGE   "B0AV"
+#define T2SMC_BATTERY_CURRENT   "B0AC"
+#define T2SMC_BATTERY_POWER     "B0AP"
+#define T2SMC_BATTERY_FULL      "B0FC"
+#define T2SMC_BATTERY_REMAINING "B0RM"
+#define T2SMC_BATTERY_CYCLES    "B0CT"
+#define T2SMC_ADAPTER_CURRENT   "ID0R"
+#define T2SMC_ADAPTER_POWER_OLD "PD0R"
+#define T2SMC_ADAPTER_POWER     "PDTR"
+#define T2SMC_ADAPTER_VOLTAGE   "VD0R"
 #define FLOAT_TYPE      "flt "
 #define TEMP_SENSOR_TYPE "sp78"
 
@@ -99,11 +115,22 @@ struct t2smc_device {
 	unsigned int key_count;
 	unsigned int fan_count;
 	unsigned int temp_count;
+	unsigned int power_count;
 	struct t2smc_entry *cache;
 	char (*temp_keys)[5]; /* [temp_count] dynamically allocated */
+	char (*power_keys)[5]; /* [power_count] dynamically allocated */
 	struct rtc_device *rtc_dev;
+	struct device *hwmon_dev;
 	bool has_chls;
 	bool has_chwa;
+
+	struct notifier_block power_supply_nb;
+	struct work_struct power_event_work;
+	bool power_notifier_registered;
+	atomic64_t power_event_count;
+	u64 power_last_event_ns;
+	u8 power_status;
+	bool power_status_valid;
 };
 
 /* -- MMIO helpers -- */
@@ -149,7 +176,7 @@ static int iomem_read_smc(struct t2smc_device *t2,
 
 	err = ioread8(t2->iomem + T2SMC_IOMEM_KEY_CMD);
 	if (err != 0) {
-		dev_dbg(t2->dev, "read_smc_mmio(%x %.4s) failed: %u\n",
+		pr_debug("read_smc_mmio(%x %.4s) failed: %u\n",
 			cmd, key, err);
 		return -EIO;
 	}
@@ -189,7 +216,7 @@ static int iomem_write_smc(struct t2smc_device *t2,
 
 	err = ioread8(t2->iomem + T2SMC_IOMEM_KEY_CMD);
 	if (err != 0) {
-		dev_dbg(t2->dev, "write_smc_mmio(%x %.4s) failed: %u\n",
+		pr_debug("write_smc_mmio(%x %.4s) failed: %u\n",
 			cmd, key, err);
 		return -EIO;
 	}
@@ -213,7 +240,7 @@ static int iomem_get_key_info(struct t2smc_device *t2,
 
 	err = ioread8(t2->iomem + T2SMC_IOMEM_KEY_CMD);
 	if (err != 0) {
-		dev_dbg(t2->dev, "get_key_type_mmio(%.4s) failed: %u\n", key, err);
+		pr_debug("get_key_type_mmio(%.4s) failed: %u\n", key, err);
 		return -EIO;
 	}
 
@@ -222,7 +249,7 @@ static int iomem_get_key_info(struct t2smc_device *t2,
 	memcpy(info->type, &type, sizeof(type));
 	info->flags = ioread8(t2->iomem + T2SMC_IOMEM_KEY_TYPE_FLAGS);
 
-	dev_dbg(t2->dev, "get_key_type_mmio(%.4s): len=%u type=%.4s flags=%x\n",
+	pr_debug("get_key_type_mmio(%.4s): len=%u type=%.4s flags=%x\n",
 		key, info->len, info->type, info->flags);
 	return 0;
 }
@@ -396,6 +423,106 @@ static int t2smc_has_key(struct t2smc_device *t2,
 	return 0;
 }
 
+static int t2smc_read_be16(struct t2smc_device *t2, const char *key, u16 *val)
+{
+	__be16 raw;
+	int ret;
+
+	ret = t2smc_read_key(t2, key, (u8 *)&raw, sizeof(raw));
+	if (!ret)
+		*val = be16_to_cpu(raw);
+	return ret;
+}
+
+static int t2smc_read_be16_signed(struct t2smc_device *t2, const char *key,
+				  s16 *val)
+{
+	u16 raw;
+	int ret;
+
+	ret = t2smc_read_be16(t2, key, &raw);
+	if (!ret)
+		*val = (s16)raw;
+	return ret;
+}
+
+static int t2smc_hex_digit(char digit)
+{
+	if (digit >= '0' && digit <= '9')
+		return digit - '0';
+	if (digit >= 'a' && digit <= 'f')
+		return digit - 'a' + 10;
+	if (digit >= 'A' && digit <= 'F')
+		return digit - 'A' + 10;
+	return -EINVAL;
+}
+
+static int t2smc_read_scaled(struct t2smc_device *t2, const char *key,
+			     long scale, long *val)
+{
+	struct t2smc_entry *entry;
+	u8 buf[4];
+	u32 raw;
+	u64 magnitude;
+	int exponent;
+	int ret;
+
+	entry = t2smc_get_entry_by_key(t2, key);
+	if (IS_ERR(entry))
+		return PTR_ERR(entry);
+
+	if (!strcmp(entry->type, "flt ")) {
+		ret = t2smc_read_key(t2, key, buf, sizeof(buf));
+		if (ret)
+			return ret;
+
+		memcpy(&raw, buf, sizeof(raw));
+		magnitude = (raw & GENMASK(22, 0)) | BIT(23);
+		exponent = ((raw >> 23) & 0xff) - 127 - 23;
+		magnitude *= scale;
+
+		if (exponent < -63)
+			magnitude = 0;
+		else if (exponent < 0)
+			magnitude >>= -exponent;
+		else if (exponent < 63)
+			magnitude <<= exponent;
+		else
+			magnitude = LONG_MAX;
+
+		*val = min_t(u64, magnitude, LONG_MAX);
+		if (raw & BIT(31))
+			*val = -*val;
+		return 0;
+	}
+
+	if (entry->len == 2) {
+		u16 fixed;
+		int integer_bits, fractional_bits;
+		bool signed_type = entry->type[0] == 's';
+
+		if ((strncmp(entry->type, "sp", 2) &&
+		     strncmp(entry->type, "fp", 2)))
+			return -EOPNOTSUPP;
+		integer_bits = t2smc_hex_digit(entry->type[2]);
+		fractional_bits = t2smc_hex_digit(entry->type[3]);
+		if (integer_bits < 0 || fractional_bits < 0 ||
+		    integer_bits + fractional_bits != (signed_type ? 15 : 16))
+			return -EOPNOTSUPP;
+
+		ret = t2smc_read_be16(t2, key, &fixed);
+		if (ret)
+			return ret;
+		if (signed_type)
+			*val = mult_frac((s16)fixed, scale, BIT(fractional_bits));
+		else
+			*val = mult_frac(fixed, scale, BIT(fractional_bits));
+		return 0;
+	}
+
+	return -EOPNOTSUPP;
+}
+
 /* -- T2 float conversion (fans use IEEE 754 "flt " type on T2) -- */
 static inline u32 float_to_u32(u32 d)
 {
@@ -466,6 +593,41 @@ static int t2smc_init_keycache(struct t2smc_device *t2)
 	if (t2->fan_count > 10)
 		t2->fan_count = 10;
 
+	/* Discover all power keys in the sorted P..Q range. */
+	{
+		unsigned int p, power_begin, power_end;
+
+		ret = t2smc_get_lower_bound(t2, &power_begin, "P");
+		if (ret)
+			return ret;
+		ret = t2smc_get_lower_bound(t2, &power_end, "Q");
+		if (ret)
+			return ret;
+
+		t2->power_count = power_end - power_begin;
+		if (t2->power_count) {
+			t2->power_keys = kcalloc(t2->power_count,
+						 sizeof(t2->power_keys[0]),
+						 GFP_KERNEL);
+			if (!t2->power_keys) {
+				t2->power_count = 0;
+			} else {
+				for (p = power_begin; p < power_end; p++) {
+					struct t2smc_entry *entry;
+
+					entry = t2smc_get_entry_by_index(t2, p);
+					if (IS_ERR(entry)) {
+						t2->power_count = p - power_begin;
+						break;
+					}
+					memcpy(t2->power_keys[p - power_begin],
+					       entry->key, 4);
+					t2->power_keys[p - power_begin][4] = '\0';
+				}
+			}
+		}
+	}
+
 	/* Discover temperature sensors (keys in T..U range, type sp78) */
 	{
 		unsigned int t, temp_begin, temp_end;
@@ -531,8 +693,9 @@ static int t2smc_init_keycache(struct t2smc_device *t2)
 	if (ret)
 		return ret;
 
-	dev_info(t2->dev, "initialized: keys=%u fans=%u temps=%u\n",
-		 t2->key_count, t2->fan_count, t2->temp_count);
+	dev_info(t2->dev, "initialized: keys=%u fans=%u temps=%u power=%u\n",
+		 t2->key_count, t2->fan_count, t2->temp_count,
+		 t2->power_count);
 	dev_info(t2->dev,
 		 "charge keys: CHLS=%d CHWA=%d\n", t2->has_chls,
 		 t2->has_chwa);
@@ -543,7 +706,7 @@ static int t2smc_try_enable_iomem(struct t2smc_device *t2)
 {
 	u8 test_val, ldkn_version;
 
-	dev_dbg(t2->dev, "Trying to enable MMIO communication\n");
+	pr_debug("Trying to enable MMIO communication\n");
 	t2->iomem = ioremap(t2->iomem_addr, t2->iomem_size);
 	if (!t2->iomem)
 		goto out;
@@ -714,6 +877,14 @@ static int t2smc_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 			return -EINVAL;
 		return t2smc_read_temp(t2, t2->temp_keys[channel], val);
 
+	case hwmon_power:
+		if (attr != hwmon_power_input)
+			return -EOPNOTSUPP;
+		if (channel >= t2->power_count)
+			return -EINVAL;
+		return t2smc_read_scaled(t2, t2->power_keys[channel],
+					 1000000, val);
+
 	case hwmon_fan:
 		switch (attr) {
 		case hwmon_fan_input:
@@ -781,6 +952,8 @@ static umode_t t2smc_hwmon_is_visible(const void *drvdata,
 	switch (type) {
 	case hwmon_temp:
 		return 0444;
+	case hwmon_power:
+		return 0444;
 	case hwmon_fan:
 		switch (attr) {
 		case hwmon_fan_min:
@@ -805,6 +978,12 @@ static int t2smc_hwmon_read_string(struct device *dev,
 		if (channel >= t2->temp_count)
 			return -EINVAL;
 		*str = t2->temp_keys[channel];
+		return 0;
+	}
+	if (type == hwmon_power && attr == hwmon_power_label) {
+		if (channel >= t2->power_count)
+			return -EINVAL;
+		*str = t2->power_keys[channel];
 		return 0;
 	}
 	return -EOPNOTSUPP;
@@ -886,10 +1065,186 @@ static const struct attribute_group t2smc_bclm_group = {
 	.attrs = t2smc_bclm_attrs,
 };
 
-static const struct attribute_group *t2smc_extra_groups[] = {
-	&t2smc_bclm_group,
+enum t2smc_power_attr {
+	T2SMC_POWER_EVENT_COUNT,
+	T2SMC_POWER_LAST_EVENT_NS,
+	T2SMC_POWER_STATUS,
+	T2SMC_POWER_CAPACITY,
+	T2SMC_POWER_BATTERY_VOLTAGE,
+	T2SMC_POWER_BATTERY_CURRENT,
+	T2SMC_POWER_BATTERY_POWER,
+	T2SMC_POWER_CHARGE_FULL,
+	T2SMC_POWER_CHARGE_NOW,
+	T2SMC_POWER_CYCLE_COUNT,
+	T2SMC_POWER_ADAPTER_VOLTAGE,
+	T2SMC_POWER_ADAPTER_CURRENT,
+	T2SMC_POWER_ADAPTER_POWER,
+};
+
+static ssize_t t2smc_power_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct sensor_device_attribute *sattr = to_sensor_dev_attr(attr);
+	struct t2smc_device *t2 = dev_get_drvdata(dev);
+	const char *key;
+	long val;
+	u16 value16;
+	s16 signed16;
+	int ret;
+
+	switch (sattr->index) {
+	case T2SMC_POWER_EVENT_COUNT:
+		return sysfs_emit(buf, "%lld\n",
+				  atomic64_read(&t2->power_event_count));
+	case T2SMC_POWER_LAST_EVENT_NS:
+		return sysfs_emit(buf, "%llu\n",
+				  READ_ONCE(t2->power_last_event_ns));
+	case T2SMC_POWER_STATUS:
+		if (!READ_ONCE(t2->power_status_valid))
+			return -ENODATA;
+		return sysfs_emit(buf, "%u\n", READ_ONCE(t2->power_status));
+	case T2SMC_POWER_CAPACITY:
+		ret = t2smc_read_be16(t2, T2SMC_BATTERY_CAPACITY, &value16);
+		val = value16;
+		break;
+	case T2SMC_POWER_BATTERY_VOLTAGE:
+		ret = t2smc_read_be16(t2, T2SMC_BATTERY_VOLTAGE, &value16);
+		val = (long)value16 * 1000;
+		break;
+	case T2SMC_POWER_BATTERY_CURRENT:
+		ret = t2smc_read_be16_signed(t2, T2SMC_BATTERY_CURRENT,
+					     &signed16);
+		val = (long)signed16 * 1000;
+		break;
+	case T2SMC_POWER_BATTERY_POWER:
+		ret = t2smc_read_scaled(t2, T2SMC_BATTERY_POWER, 1000000, &val);
+		break;
+	case T2SMC_POWER_CHARGE_FULL:
+		ret = t2smc_read_be16(t2, T2SMC_BATTERY_FULL, &value16);
+		val = (long)value16 * 1000;
+		break;
+	case T2SMC_POWER_CHARGE_NOW:
+		ret = t2smc_read_be16(t2, T2SMC_BATTERY_REMAINING, &value16);
+		val = (long)value16 * 1000;
+		break;
+	case T2SMC_POWER_CYCLE_COUNT:
+		ret = t2smc_read_be16(t2, T2SMC_BATTERY_CYCLES, &value16);
+		val = value16;
+		break;
+	case T2SMC_POWER_ADAPTER_VOLTAGE:
+		ret = t2smc_read_scaled(t2, T2SMC_ADAPTER_VOLTAGE,
+					1000000, &val);
+		break;
+	case T2SMC_POWER_ADAPTER_CURRENT:
+		ret = t2smc_read_scaled(t2, T2SMC_ADAPTER_CURRENT,
+					1000000, &val);
+		break;
+	case T2SMC_POWER_ADAPTER_POWER:
+		key = !IS_ERR(t2smc_get_entry_by_key(t2,
+						     T2SMC_ADAPTER_POWER_OLD)) ?
+			T2SMC_ADAPTER_POWER_OLD : T2SMC_ADAPTER_POWER;
+		ret = t2smc_read_scaled(t2, key, 1000000, &val);
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	if (ret)
+		return ret;
+	return sysfs_emit(buf, "%ld\n", val);
+}
+
+static SENSOR_DEVICE_ATTR_RO(power_event_count, t2smc_power,
+			     T2SMC_POWER_EVENT_COUNT);
+static SENSOR_DEVICE_ATTR_RO(power_last_event_ns, t2smc_power,
+			     T2SMC_POWER_LAST_EVENT_NS);
+static SENSOR_DEVICE_ATTR_RO(smc_battery_status, t2smc_power,
+			     T2SMC_POWER_STATUS);
+static SENSOR_DEVICE_ATTR_RO(smc_battery_capacity_percent, t2smc_power,
+			     T2SMC_POWER_CAPACITY);
+static SENSOR_DEVICE_ATTR_RO(smc_battery_voltage_uv, t2smc_power,
+			     T2SMC_POWER_BATTERY_VOLTAGE);
+static SENSOR_DEVICE_ATTR_RO(smc_battery_current_ua, t2smc_power,
+			     T2SMC_POWER_BATTERY_CURRENT);
+static SENSOR_DEVICE_ATTR_RO(smc_battery_power_uw, t2smc_power,
+			     T2SMC_POWER_BATTERY_POWER);
+static SENSOR_DEVICE_ATTR_RO(smc_battery_charge_full_uah, t2smc_power,
+			     T2SMC_POWER_CHARGE_FULL);
+static SENSOR_DEVICE_ATTR_RO(smc_battery_charge_now_uah, t2smc_power,
+			     T2SMC_POWER_CHARGE_NOW);
+static SENSOR_DEVICE_ATTR_RO(smc_battery_cycle_count, t2smc_power,
+			     T2SMC_POWER_CYCLE_COUNT);
+static SENSOR_DEVICE_ATTR_RO(smc_adapter_voltage_uv, t2smc_power,
+			     T2SMC_POWER_ADAPTER_VOLTAGE);
+static SENSOR_DEVICE_ATTR_RO(smc_adapter_current_ua, t2smc_power,
+			     T2SMC_POWER_ADAPTER_CURRENT);
+static SENSOR_DEVICE_ATTR_RO(smc_adapter_power_uw, t2smc_power,
+			     T2SMC_POWER_ADAPTER_POWER);
+
+static struct attribute *t2smc_power_attrs[] = {
+	&sensor_dev_attr_power_event_count.dev_attr.attr,
+	&sensor_dev_attr_power_last_event_ns.dev_attr.attr,
+	&sensor_dev_attr_smc_battery_status.dev_attr.attr,
+	&sensor_dev_attr_smc_battery_capacity_percent.dev_attr.attr,
+	&sensor_dev_attr_smc_battery_voltage_uv.dev_attr.attr,
+	&sensor_dev_attr_smc_battery_current_ua.dev_attr.attr,
+	&sensor_dev_attr_smc_battery_power_uw.dev_attr.attr,
+	&sensor_dev_attr_smc_battery_charge_full_uah.dev_attr.attr,
+	&sensor_dev_attr_smc_battery_charge_now_uah.dev_attr.attr,
+	&sensor_dev_attr_smc_battery_cycle_count.dev_attr.attr,
+	&sensor_dev_attr_smc_adapter_voltage_uv.dev_attr.attr,
+	&sensor_dev_attr_smc_adapter_current_ua.dev_attr.attr,
+	&sensor_dev_attr_smc_adapter_power_uw.dev_attr.attr,
 	NULL,
 };
+
+static const struct attribute_group t2smc_power_group = {
+	.attrs = t2smc_power_attrs,
+};
+
+static const struct attribute_group *t2smc_hwmon_groups[] = {
+	&t2smc_bclm_group,
+	&t2smc_power_group,
+	NULL,
+};
+
+static void t2smc_power_event_work(struct work_struct *work)
+{
+	struct t2smc_device *t2 = container_of(work, struct t2smc_device,
+					       power_event_work);
+	u8 status;
+
+	if (t2smc_read_key(t2, T2SMC_BATTERY_STATUS, &status, sizeof(status)))
+		return;
+
+	WRITE_ONCE(t2->power_status, status);
+	WRITE_ONCE(t2->power_status_valid, true);
+
+	WRITE_ONCE(t2->power_last_event_ns, ktime_get_boottime_ns());
+	atomic64_inc(&t2->power_event_count);
+	if (t2->hwmon_dev)
+		sysfs_notify(&t2->hwmon_dev->kobj, NULL, "power_event_count");
+}
+
+static int t2smc_power_supply_event(struct notifier_block *nb,
+				    unsigned long event, void *data)
+{
+	struct t2smc_device *t2 = container_of(nb, struct t2smc_device,
+					       power_supply_nb);
+	struct power_supply *psy = data;
+
+	if (event != PSY_EVENT_PROP_CHANGED || !psy || !psy->desc)
+		return NOTIFY_DONE;
+	if (psy->desc->type != POWER_SUPPLY_TYPE_BATTERY &&
+	    psy->desc->type != POWER_SUPPLY_TYPE_MAINS)
+		return NOTIFY_DONE;
+	if (strncmp(psy->desc->name, "BAT", 3) &&
+	    strncmp(psy->desc->name, "ADP", 3))
+		return NOTIFY_DONE;
+
+	schedule_work(&t2->power_event_work);
+	return NOTIFY_OK;
+}
 
 /* -- RTC (48-bit 32768 Hz counter + offset) -- */
 static int t2smc_read_rtc_key(struct t2smc_device *t2, const char *key, u64 *val)
@@ -1013,11 +1368,13 @@ static int t2smc_register_hwmon(struct t2smc_device *t2)
 	fan_info->type   = hwmon_fan;
 	fan_info->config = fan_config;
 
-	/* Build info array: fan + optional temp, terminated by NULL */
+	/* Build info array: fan + optional temp/power, terminated by NULL */
 	{
 		struct hwmon_channel_info *temp_info = NULL;
+		struct hwmon_channel_info *power_info = NULL;
 		const struct hwmon_channel_info **info;
 		u32 *temp_config;
+		u32 *power_config;
 		int nchans = 2; /* fan + sentinel */
 		int idx = 0;
 
@@ -1035,12 +1392,28 @@ static int t2smc_register_hwmon(struct t2smc_device *t2)
 			temp_info->config = temp_config;
 		}
 
+		if (t2->power_count) {
+			nchans++;
+			power_config = devm_kcalloc(dev, t2->power_count + 1,
+						    sizeof(u32), GFP_KERNEL);
+			power_info = devm_kzalloc(dev, sizeof(*power_info),
+						   GFP_KERNEL);
+			if (!power_config || !power_info)
+				return -ENOMEM;
+			for (i = 0; i < t2->power_count; i++)
+				power_config[i] = HWMON_P_INPUT | HWMON_P_LABEL;
+			power_info->type = hwmon_power;
+			power_info->config = power_config;
+		}
+
 		info = devm_kcalloc(dev, nchans, sizeof(*info), GFP_KERNEL);
 		if (!info)
 			return -ENOMEM;
 		info[idx++] = fan_info;
 		if (temp_info)
 			info[idx++] = temp_info;
+		if (power_info)
+			info[idx++] = power_info;
 		info[idx] = NULL;
 		chip_info->info = info;
 	}
@@ -1049,9 +1422,10 @@ static int t2smc_register_hwmon(struct t2smc_device *t2)
 
 	hwmon_dev = devm_hwmon_device_register_with_info(dev, "t2smc", t2,
 							  chip_info,
-							  t2smc_extra_groups);
+							  t2smc_hwmon_groups);
 	if (IS_ERR(hwmon_dev))
 		return PTR_ERR(hwmon_dev);
+	t2->hwmon_dev = hwmon_dev;
 
 	return 0;
 }
@@ -1066,6 +1440,18 @@ static void t2smc_devm_cleanup(void *data)
 	mutex_destroy(&t2->mutex);
 	kfree(t2->cache);
 	kfree(t2->temp_keys);
+	kfree(t2->power_keys);
+}
+
+static void t2smc_unregister_power_notifier(void *data)
+{
+	struct t2smc_device *t2 = data;
+
+	if (t2->power_notifier_registered) {
+		power_supply_unreg_notifier(&t2->power_supply_nb);
+		t2->power_notifier_registered = false;
+	}
+	cancel_work_sync(&t2->power_event_work);
 }
 
 /* -- ACPI driver callbacks -- */
@@ -1081,6 +1467,9 @@ static int t2smc_add(struct acpi_device *adev)
 	t2->adev = adev;
 	t2->dev = &adev->dev;
 	mutex_init(&t2->mutex);
+	INIT_WORK(&t2->power_event_work, t2smc_power_event_work);
+	atomic64_set(&t2->power_event_count, 0);
+	t2->power_supply_nb.notifier_call = t2smc_power_supply_event;
 	dev_set_drvdata(&adev->dev, t2);
 
 	/*
@@ -1114,7 +1503,10 @@ static int t2smc_add(struct acpi_device *adev)
 			t2->cache = NULL;
 			kfree(t2->temp_keys);
 			t2->temp_keys = NULL;
+			kfree(t2->power_keys);
+			t2->power_keys = NULL;
 			t2->key_count = 0;
+			t2->power_count = 0;
 
 			ret = t2smc_init_keycache(t2);
 			if (!ret) {
@@ -1138,6 +1530,19 @@ static int t2smc_add(struct acpi_device *adev)
 		return ret;
 
 	ret = t2smc_register_rtc(t2);
+	if (ret)
+		return ret;
+
+	if (!t2smc_read_key(t2, T2SMC_BATTERY_STATUS, &t2->power_status,
+			    sizeof(t2->power_status)))
+		t2->power_status_valid = true;
+
+	ret = power_supply_reg_notifier(&t2->power_supply_nb);
+	if (ret)
+		return ret;
+	t2->power_notifier_registered = true;
+	ret = devm_add_action_or_reset(&adev->dev,
+				       t2smc_unregister_power_notifier, t2);
 	if (ret)
 		return ret;
 

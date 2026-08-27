@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "messages": {
+    "brcmfmac-pm-max-power-management": {
+      "message_id": "1536401557581602927",
+      "hash": "b097d8f910b260e44b3ff6f83666ddebc22e316c98610d8f121af1efa1c5fead"
+    },
+    "keyboard-backlight-reenumeration": {
+      "message_id": "1533951131821146283",
+      "hash": "c7a10f3fb838ee7bdff20f16adc3cd6dc0c9cfc119c172d0d02170c2d4592b1c"
+    },
+    "thunderbolt-device-links": {
+      "message_id": "1533951135214469344",
+      "hash": "6815dbfe3b11fb7e77c7ee0f380cf44ed56dd7ad566664baf7062a6ab8f3d793"
+    },
+    "apple-t2-early-cpu-offlining": {
+      "message_id": "1537074756724199444",
+      "hash": "343e818877bdf1f2ba39a714a563e5aca95de52a7abe27a748e6b7f48cac3c85"
+    },
+    "touchbar-runtime-pm-deadlock": {
+      "message_id": "1536401561570246706",
+      "hash": "05f6af62073452e445307eeac797174bd3ed853a127651dac24b16ff25fb880a"
+    },
+    "display-brightness-after-reboot": {
+      "message_id": "1533951138557198509",
+      "hash": "0301d1f8aea4fcdacc2ad6ff0eaa9274da0452b8568380de5ad66239ae94a6ca"
+    },
+    "thunderbolt-controller-power-15-1": {
+      "message_id": "1533951141778423979",
+      "hash": "eb3c614aef7febe8861faa138805d37cf61a129e1bd86d7827e02d0b503d2e36"
+    },
+    "volume-slider-crackling": {
+      "message_id": "1533951145570209955",
+      "hash": "f5e151595313c9d7556186823e8b8bc3db43261a64c464d40daf0cd4536f481b"
+    },
+    "fn-double-press-layer-switch": {
+      "message_id": "1533951148980047994",
+      "hash": "b2f71c22002e9cdbde460d55ff76474de3732283f37aa5540dac8181b29e5a13"
+    },
+    "dgpu-wakeup-15-1": {
+      "message_id": "1533951152339554465",
+      "hash": "33bd7fe78862c6864950497660bc8f0a5786d9b8672b28ae1250a0ac44990186"
+    },
+    "keyboard-backlight-brightness": {
+      "message_id": "1533951156437520404",
+      "hash": "b05360dea560c0de84d4c015affb11cde450ba9eb88cc0756f1f617c356baa5b"
+    },
+    "keyboard-backlight-after-resume": {
+      "message_id": "1533951161063968828",
+      "hash": "7850a9680bbb9d9622a4ab8f07b778cab6f62b05d7921d42a30f262720a1318b"
+    },
+    "hybrid-graphics": {
+      "message_id": "1537074764714082334",
+      "hash": "8b6a7278d68261470943182cb08b72ef1cbe37a1b73e391e354dca56b37f4dc8"
+    }
+  }
+}

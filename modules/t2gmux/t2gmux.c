@@ -19,6 +19,7 @@
 #include <linux/apple-gmux.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
+#include <linux/dmi.h>
 #include <linux/pci.h>
 #include <linux/vga_switcheroo.h>
 #include <linux/debugfs.h>
@@ -79,11 +80,39 @@ struct apple_gmux_data {
 	u8 selected_port;
 	struct dentry *debug_dentry;
 
-	struct pci_dev *dgpu_pdev;
-	enum apple_gmux_type type;
+	struct pci_dev *discrete_pdev;
+	bool use_pwg_power_sequence;
 };
 
 static struct apple_gmux_data *apple_gmux_data;
+
+static int gmux_call_pwg(struct apple_gmux_data *gmux_data,
+			 const char *method)
+{
+	acpi_handle handle = ACPI_HANDLE(&gmux_data->discrete_pdev->dev);
+	unsigned long long result;
+	acpi_status status;
+
+	if (!handle)
+		return -ENODEV;
+
+	status = acpi_evaluate_integer(handle, (acpi_string)method, NULL,
+				       &result);
+	if (ACPI_FAILURE(status)) {
+		dev_err(&gmux_data->discrete_pdev->dev,
+			"failed to evaluate %s: %s\n", method,
+			acpi_format_exception(status));
+		return -EIO;
+	}
+
+	if (result) {
+		dev_err(&gmux_data->discrete_pdev->dev,
+			"%s failed: %llu\n", method, result);
+		return -EIO;
+	}
+
+	return 0;
+}
 
 struct apple_gmux_config {
 	u8 (*read8)(struct apple_gmux_data *gmux_data, int port);
@@ -513,57 +542,51 @@ static int gmux_switch_ddc(enum vga_switcheroo_client_id id)
 static int gmux_set_discrete_state(struct apple_gmux_data *gmux_data,
 				   enum vga_switcheroo_state state)
 {
+	int ret;
+
 	reinit_completion(&gmux_data->powerchange_done);
 
 	if (state == VGA_SWITCHEROO_ON) {
-		if (gmux_data->type == APPLE_GMUX_TYPE_MMIO &&
-		    gmux_data->dgpu_pdev) {
-			acpi_handle dgpu_handle =
-				ACPI_HANDLE(&gmux_data->dgpu_pdev->dev);
-			void __iomem *bar;
-			u16 val;
-			u16 ms;
+		if (gmux_data->use_pwg_power_sequence &&
+		    gmux_data->discrete_pdev) {
+			u16 vendor;
+			int i;
 
 			gmux_write8(gmux_data, GMUX_PORT_DISCRETE_POWER, 2);
 			msleep(100);
 			gmux_write8(gmux_data, GMUX_PORT_DISCRETE_POWER, 3);
-			acpi_evaluate_object(dgpu_handle, "PWG1", NULL, NULL);
 
-			for (ms = 0; ms < 1000; ms++) {
-				pci_read_config_word(gmux_data->dgpu_pdev,
-						     PCI_VENDOR_ID, &val);
-				if (val != 0xffff)
+			ret = gmux_call_pwg(gmux_data, "PWG1");
+			if (ret)
+				return ret;
+
+			for (i = 0; i < 1000; i++) {
+				pci_read_config_word(gmux_data->discrete_pdev,
+						     PCI_VENDOR_ID, &vendor);
+				if (vendor != 0xffff)
 					break;
-				msleep(1);
+				usleep_range(1000, 2000);
 			}
-			if (val == 0xffff) {
-				pr_err("Timed out waiting for DGPU to power on\n");
+			if (vendor == 0xffff) {
+				dev_err(&gmux_data->discrete_pdev->dev,
+					"timed out waiting for PCI config space\n");
 				return -ETIMEDOUT;
 			}
 
-			bar = pci_iomap(gmux_data->dgpu_pdev, 0, 0);
-			if (!bar)
-				return -ENOMEM;
+			ret = gmux_call_pwg(gmux_data, "PWG3");
+			if (ret)
+				return ret;
 
-			iowrite32(ioread32(bar + 0x8c340) & 0x3fffffff,
-				  bar + 0x8c340);
-			pci_iounmap(gmux_data->dgpu_pdev, bar);
-
-			acpi_evaluate_object(dgpu_handle, "PWG3", NULL, NULL);
 		} else {
 			gmux_write8(gmux_data, GMUX_PORT_DISCRETE_POWER, 1);
 			gmux_write8(gmux_data, GMUX_PORT_DISCRETE_POWER, 3);
 		}
 		pr_debug("Discrete card powered up\n");
 	} else {
-		if (gmux_data->type == APPLE_GMUX_TYPE_MMIO) {
-			gmux_write8(gmux_data, GMUX_PORT_DISCRETE_POWER, 1);
-			msleep(10);
-			gmux_write8(gmux_data, GMUX_PORT_DISCRETE_POWER, 0);
-		} else {
-			gmux_write8(gmux_data, GMUX_PORT_DISCRETE_POWER, 1);
-			gmux_write8(gmux_data, GMUX_PORT_DISCRETE_POWER, 0);
-		}
+		gmux_write8(gmux_data, GMUX_PORT_DISCRETE_POWER, 1);
+		if (gmux_data->use_pwg_power_sequence)
+			usleep_range(10000, 11000);
+		gmux_write8(gmux_data, GMUX_PORT_DISCRETE_POWER, 0);
 		pr_debug("Discrete card powered down\n");
 	}
 
@@ -597,11 +620,14 @@ static enum vga_switcheroo_client_id gmux_get_client_id(struct pci_dev *pdev)
 	else if (pdev->vendor == PCI_VENDOR_ID_NVIDIA &&
 		 pdev->device == 0x0863)
 		return VGA_SWITCHEROO_IGD;
-	else {
-		if (!apple_gmux_data->dgpu_pdev)
-			apple_gmux_data->dgpu_pdev = pdev;
-		return VGA_SWITCHEROO_DIS;
+
+	if (apple_gmux_data->use_pwg_power_sequence &&
+	    apple_gmux_data->discrete_pdev != pdev) {
+		pci_dev_put(apple_gmux_data->discrete_pdev);
+		apple_gmux_data->discrete_pdev = pci_dev_get(pdev);
 	}
+
+	return VGA_SWITCHEROO_DIS;
 }
 
 static const struct vga_switcheroo_handler gmux_handler_no_ddc = {
@@ -851,7 +877,8 @@ static int gmux_probe(struct pnp_dev *pnp, const struct pnp_device_id *id)
 	if (!gmux_data)
 		return -ENOMEM;
 	pnp_set_drvdata(pnp, gmux_data);
-	gmux_data->type = type;
+	gmux_data->use_pwg_power_sequence = type == APPLE_GMUX_TYPE_MMIO &&
+		dmi_match(DMI_PRODUCT_NAME, "MacBookPro15,1");
 
 	switch (type) {
 	case APPLE_GMUX_TYPE_MMIO:
@@ -1058,12 +1085,13 @@ static void gmux_remove(struct pnp_dev *pnp)
 	} else
 		release_region(gmux_data->iostart, gmux_data->iolen);
 	apple_gmux_data = NULL;
+	pci_dev_put(gmux_data->discrete_pdev);
 	kfree(gmux_data);
 }
 
 static const struct pnp_device_id gmux_device_ids[] = {
-	{GMUX_ACPI_HID, 0},
-	{"", 0}
+	{ .id = GMUX_ACPI_HID },
+	{ }
 };
 
 static const struct dev_pm_ops gmux_dev_pm_ops = {
@@ -1085,5 +1113,6 @@ module_pnp_driver(gmux_pnp_driver);
 MODULE_AUTHOR("Seth Forshee <seth.forshee@canonical.com>");
 MODULE_AUTHOR("kait2en");
 MODULE_DESCRIPTION("Kait2en T2 GMUX driver");
+MODULE_VERSION("0.8");
 MODULE_LICENSE("GPL");
 MODULE_DEVICE_TABLE(pnp, gmux_device_ids);

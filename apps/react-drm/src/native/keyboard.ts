@@ -1,4 +1,7 @@
 import { loadAddon } from './load-addon';
+import { createLogger } from '../logger';
+
+const log = createLogger('keyboard');
 
 interface KeyboardAddon {
   KeyboardReader: new (devicePath: string) => NativeKeyboardReader;
@@ -6,6 +9,7 @@ interface KeyboardAddon {
   findKeyboardDevices: () => string[];
   findPointerDevices:  () => string[];
   findLidDevice:       () => string;
+  readLidClosed:       (devicePath: string) => boolean;
 }
 
 function loadNative(): KeyboardAddon {
@@ -60,6 +64,7 @@ export function resolveKeyCode(key: KeyId): number {
 export function findKeyboardDevices(): string[] { return loadNative().findKeyboardDevices(); }
 export function findPointerDevices(): string[]  { return loadNative().findPointerDevices(); }
 export function findLidDevice(): string         { return loadNative().findLidDevice(); }
+export function readLidClosed(path: string): boolean { return loadNative().readLidClosed(path); }
 
 // Delay between reconnect attempts. After an apple-bce resume the keyboard node
 // can take a few seconds to re-enumerate, so retry on the same 3s cadence as the
@@ -101,7 +106,7 @@ export class KeyboardReader {
       // uncaught exception and aborts the whole process. Contain + log instead.
       this.listeners.forEach(l => {
         try { l(code, value); }
-        catch (e) { console.error('[react-drm] keyboard listener threw:', e); }
+        catch (e) { log.error('listener threw:', e); }
       });
     });
   }
@@ -142,7 +147,7 @@ export class KeyboardReader {
     this.suspended = true;
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     try { this.handle.stop(); } catch (_) { /* already gone */ }
-    console.log(`[react-drm] keyboard: released ${this.currentPath} for sleep`);
+    log.info(`released ${this.currentPath} for sleep`);
   }
 
   /**
@@ -155,9 +160,9 @@ export class KeyboardReader {
     try {
       this.handle = this.openHandle();
       this.startHandle();
-      console.log(`[react-drm] keyboard: reopened ${this.currentPath} after resume`);
+      log.info(`reopened ${this.currentPath} after resume`);
     } catch (_) {
-      console.warn(`[react-drm] keyboard: not back yet after resume, retrying in ${RECONNECT_DELAY_MS}ms`);
+      log.warn(`not back yet after resume, retrying in ${RECONNECT_DELAY_MS}ms`);
       this.scheduleReconnect(RECONNECT_DELAY_MS);
     }
   }

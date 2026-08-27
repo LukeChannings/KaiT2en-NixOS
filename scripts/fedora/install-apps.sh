@@ -2,10 +2,26 @@
 
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/lib.sh"
 
+install_mode=all
+case "${1:-}" in
+	"") ;;
+	--react-drm-only) install_mode=react-drm ;;
+	*)
+		printf 'usage: %s [--react-drm-only]\n' "${0##*/}" >&2
+		exit 2
+		;;
+esac
+
 require_root
 require_repo_root
 require_fedora
-require_command make cargo tar getent cut id rpm dnf systemctl udevadm
+require_command \
+	awk chown cut desktop-file-validate dnf env getent grep id install mktemp \
+	modinfo npm rm rpm sleep sudo systemctl tar tr udevadm \
+	update-desktop-database usermod
+if [[ "$install_mode" == all ]]; then
+	require_command cargo make
+fi
 
 REACT_DRM_FEDORA_PACKAGES=(
 	nodejs22-bin
@@ -35,6 +51,14 @@ REACT_DRM_CONFLICT_DAEMONS=(
 	tiny-dfr
 	mac-touchbar-plus
 )
+
+remove_obsolete_apps() {
+	info "removing obsolete t2-gpu-switch installation"
+	rm -f \
+		/usr/local/bin/t2-gpu-switch \
+		/usr/local/libexec/t2-gpu-switch-helper \
+		/usr/local/share/applications/org.t2gpuswitch.gtk.desktop
+}
 
 install_rust_app() {
 	local path=$1 name=$2 target_user
@@ -82,14 +106,47 @@ has_t2_touchbar_model() {
 	esac
 }
 
+install_gpu_control() {
+	local model
+
+	[[ -r /sys/class/dmi/id/product_name ]] || {
+		info "DMI product name not found, skipping GPU control"
+		return
+	}
+	read -r model </sys/class/dmi/id/product_name
+
+	case "$model" in
+		MacBookPro15,1)
+			info "installing tested hybrid graphics support for $model"
+			make -C "$REPO_ROOT/apps/t2-dgpu-control" uninstall
+			"$REPO_ROOT/apps/t2-hybrid-gpu-control/install.sh"
+			;;
+		MacBookPro15,3|MacBookPro16,1|MacBookPro16,4)
+			make -C "$REPO_ROOT/apps/t2-hybrid-gpu-control" uninstall
+			"$REPO_ROOT/apps/t2-dgpu-control/install.sh"
+			;;
+		*)
+			info "Model $model has no supported switchable AMD dGPU"
+			make -C "$REPO_ROOT/apps/t2-hybrid-gpu-control" uninstall
+			make -C "$REPO_ROOT/apps/t2-dgpu-control" uninstall
+			;;
+	esac
+}
+
 install_react_drm() {
 	local target_user target_home target_uid target_group src dst
 	local installed_node_packages=() package daemon unit group groups
 	local missing_groups=()
 	local service_dir service_file temporary_file workdir_q start_q detach_q
+	local app_dir launcher_file launcher_tmp
+	local desktop extension_uuid extension_src extension_dst
 	if ! has_t2_touchbar_model; then
 		return
 	fi
+	for module in t2bdrm t2touchbar_bl; do
+		modinfo "$module" >/dev/null 2>&1 ||
+			fail "required KaiT2en kernel module is missing: $module"
+	done
 
 	target_user="${SUDO_USER:-}"
 	[[ -n "$target_user" && "$target_user" != root ]] ||
@@ -106,6 +163,12 @@ install_react_drm() {
 	for package in package.json package-lock.json system/99-react-drm.rules system/react-drm.service system/react-drm-tb-detach; do
 		[[ -r "$src/$package" ]] || fail "react-drm deployment file is missing: $package"
 	done
+	extension_uuid="window-monitor-pro@muhammed.hussien2030.gmail.com"
+	extension_src="$src/gnome-extension/window-monitor-pro"
+	for package in extension.js metadata.json; do
+		[[ -r "$extension_src/$package" ]] ||
+			fail "react-drm GNOME extension file is missing: $package"
+	done
 	[[ -x "$src/system/react-drm-tb-detach" ]] ||
 		fail "react-drm deployment helper is not executable: system/react-drm-tb-detach"
 	if [[ -e "$dst" && ! -f "$dst/package.json" ]]; then
@@ -121,6 +184,25 @@ install_react_drm() {
 			DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$target_uid/bus" \
 			"$@"
 	}
+
+	desktop=$(
+		run_as_target systemctl --user show-environment |
+			awk -F= '$1 == "XDG_CURRENT_DESKTOP" { print tolower($2); exit }'
+	)
+	if [[ "$desktop" == *gnome* ]]; then
+		require_command gnome-extensions gsettings
+		extension_dst="$target_home/.local/share/gnome-shell/extensions/$extension_uuid"
+		info "installing Window Monitor Pro for react-drm"
+		install -d -o "$target_user" -g "$target_group" -m 0755 "$extension_dst"
+		install -o "$target_user" -g "$target_group" -m 0644 \
+			"$extension_src/extension.js" \
+			"$extension_src/metadata.json" \
+			"$extension_dst/"
+		run_as_target gsettings set org.gnome.shell disable-user-extensions false
+		if ! run_as_target gnome-extensions enable "$extension_uuid"; then
+			info "Window Monitor Pro will be enabled after the next login"
+		fi
+	fi
 
 	info "installing react-drm Fedora dependencies"
 	for package in "${REACT_DRM_FEDORA_NODE_PACKAGES[@]}"; do
@@ -182,6 +264,22 @@ install_react_drm() {
 	info "building react-drm"
 	run_as_target npm --prefix "$dst" ci
 	run_as_target npm --prefix "$dst/linux-touchbar-control-center" run build
+	run_as_target npm --prefix "$dst/config-gui" run build
+
+	info "installing react-drm config editor"
+	app_dir="$target_home/.local/share/applications"
+	launcher_file="$app_dir/react-drm-config-gui.desktop"
+	launcher_tmp=$(mktemp --suffix=.desktop /tmp/react-drm-config-gui.XXXXXX)
+	awk -v electron="$dst/node_modules/.bin/electron" -v gui="$dst/config-gui" '
+		/^Exec=/ { printf "Exec=\"%s\" \"%s\"\n", electron, gui; next }
+		{ print }
+	' "$dst/system/react-drm-config-gui.desktop" >"$launcher_tmp"
+	desktop-file-validate "$launcher_tmp"
+	install -d -o "$target_user" -g "$target_group" -m 0755 "$app_dir"
+	install -o "$target_user" -g "$target_group" -m 0644 \
+		"$launcher_tmp" "$launcher_file"
+	rm -f "$launcher_tmp"
+	run_as_target update-desktop-database "$app_dir"
 
 	service_dir="$target_home/.config/systemd/user"
 	service_file="$service_dir/react-drm.service"
@@ -214,8 +312,19 @@ install_react_drm() {
 		fail "react-drm failed to remain active; inspect it with 'journalctl --user -u react-drm.service -b'"
 }
 
-install_rust_app "$REPO_ROOT/apps/t2-fan-control" "t2-fan-control"
-install_rust_app "$REPO_ROOT/apps/t2-smc-control" "t2-smc-control"
+if [[ "$install_mode" == all ]]; then
+	remove_obsolete_apps
+	install_rust_app "$REPO_ROOT/apps/t2-fan-control" "t2-fan-control"
+	install_rust_app "$REPO_ROOT/apps/t2-smc-control" "t2-smc-control"
+	install_rust_app "$REPO_ROOT/apps/t2-power-explorer" "t2-power-explorer"
+	install_gpu_control
+	"$REPO_ROOT/apps/t2-cpu-control/install.sh"
+	"$REPO_ROOT/apps/t2-power-tune/install.sh"
+fi
 install_react_drm
 
-info "apps installed"
+if [[ "$install_mode" == react-drm ]]; then
+	info "react-drm installed"
+else
+	info "apps installed"
+fi

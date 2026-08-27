@@ -17,7 +17,8 @@
 #include <linux/module.h>
 #include <linux/string.h>
 #include <linux/backlight.h>
-#include <linux/timer.h>
+#include <linux/mutex.h>
+#include <linux/workqueue.h>
 #include <linux/input/sparse-keymap.h>
 
 #include "hid-ids.h"
@@ -62,27 +63,16 @@ struct appletb_kbd {
 	struct input_handle kbd_handle;
 	struct input_handle tpd_handle;
 	struct backlight_device *backlight_dev;
-	struct timer_list inactivity_timer;
+	struct delayed_work inactivity_work;
+	struct work_struct restore_brightness_work;
+	struct work_struct mode_work;
+	struct mutex mode_lock;
 	bool has_dimmed;
 	bool has_turned_off;
-	bool suspend_preparing_remove;
-	bool fn_down;
-	unsigned long last_mode_jiffies;
 	u8 saved_mode;
 	u8 current_mode;
+	u8 pending_mode;
 };
-
-#define APPLETB_MODE_SUBMIT_INTERVAL_MS 50
-
-static void appletb_kbd_reset_state(struct appletb_kbd *kbd)
-{
-	kbd->saved_mode = APPLETB_KBD_MODE_OFF;
-	kbd->current_mode = APPLETB_KBD_MODE_OFF;
-	kbd->has_dimmed = false;
-	kbd->has_turned_off = false;
-	kbd->fn_down = false;
-	kbd->last_mode_jiffies = 0;
-}
 
 static const struct key_entry appletb_kbd_keymap[] = {
 	{ KE_KEY, KEY_ESC, { KEY_ESC } },
@@ -101,25 +91,29 @@ static const struct key_entry appletb_kbd_keymap[] = {
 	{ KE_END, 0 }
 };
 
-static int appletb_kbd_set_mode(struct appletb_kbd *kbd, u8 mode)
+static int appletb_kbd_set_mode_active(struct appletb_kbd *kbd, u8 mode)
 {
 	struct hid_report *report = kbd->mode_field->report;
 	struct hid_device *hdev = report->device;
 	int ret;
 
-	if (kbd->suspend_preparing_remove && mode != APPLETB_KBD_MODE_OFF) {
-		return -EBUSY;
+	ret = hid_set_field(kbd->mode_field, 0, mode);
+	if (ret) {
+		hid_err(hdev, "Failed to set mode field to %u (%pe)\n", mode, ERR_PTR(ret));
+		return ret;
 	}
 
-	if (kbd->current_mode == mode) {
-		return 0;
-	}
+	hid_hw_request(hdev, report, HID_REQ_SET_REPORT);
 
-	if (kbd->last_mode_jiffies &&
-	    time_before(jiffies, kbd->last_mode_jiffies +
-				msecs_to_jiffies(APPLETB_MODE_SUBMIT_INTERVAL_MS))) {
-		return -EAGAIN;
-	}
+	kbd->current_mode = mode;
+	hid_info(hdev, "touchbar mode request sent: mode=%u\n", mode);
+	return 0;
+}
+
+static int appletb_kbd_set_mode(struct appletb_kbd *kbd, u8 mode)
+{
+	struct hid_device *hdev = kbd->mode_field->report->device;
+	int ret;
 
 	ret = hid_hw_power(hdev, PM_HINT_FULLON);
 	if (ret) {
@@ -127,36 +121,42 @@ static int appletb_kbd_set_mode(struct appletb_kbd *kbd, u8 mode)
 		return ret;
 	}
 
-	ret = hid_set_field(kbd->mode_field, 0, mode);
-	if (ret) {
-		hid_err(hdev, "Failed to set mode field to %u (%pe)\n", mode, ERR_PTR(ret));
-		goto power_normal;
-	}
+	ret = appletb_kbd_set_mode_active(kbd, mode);
 
-	hid_hw_request(hdev, report, HID_REQ_SET_REPORT);
-	kbd->current_mode = mode;
-	kbd->last_mode_jiffies = jiffies;
-
-power_normal:
 	hid_hw_power(hdev, PM_HINT_NORMAL);
 
 	return ret;
 }
 
-static void appletb_kbd_teardown(struct hid_device *hdev, struct appletb_kbd *kbd,
-				 bool send_mode_off)
+static void appletb_kbd_mode_work(struct work_struct *work)
 {
-	if (send_mode_off)
-		appletb_kbd_set_mode(kbd, APPLETB_KBD_MODE_OFF);
+	struct appletb_kbd *kbd = container_of(work, struct appletb_kbd,
+					       mode_work);
+	struct hid_device *hdev = kbd->mode_field->report->device;
+	u8 mode;
+	int ret;
 
-	input_unregister_handler(&kbd->inp_handler);
-	if (kbd->backlight_dev) {
-		put_device(&kbd->backlight_dev->dev);
-		kbd->backlight_dev = NULL;
-		timer_delete_sync(&kbd->inactivity_timer);
-	}
+	mutex_lock(&kbd->mode_lock);
+	mode = kbd->pending_mode;
+	mutex_unlock(&kbd->mode_lock);
 
-	appletb_kbd_reset_state(kbd);
+	ret = appletb_kbd_set_mode(kbd, mode);
+	if (ret)
+		hid_err(hdev, "Failed to apply deferred touchbar mode %u (%pe)\n",
+			mode, ERR_PTR(ret));
+}
+
+static void appletb_kbd_queue_mode(struct appletb_kbd *kbd, u8 mode)
+{
+	struct hid_device *hdev = kbd->mode_field->report->device;
+
+	mutex_lock(&kbd->mode_lock);
+	kbd->pending_mode = mode;
+	kbd->current_mode = mode;
+	mutex_unlock(&kbd->mode_lock);
+
+	hid_info(hdev, "touchbar mode queued from input path: mode=%u\n", mode);
+	schedule_work(&kbd->mode_work);
 }
 
 static ssize_t mode_show(struct device *dev,
@@ -182,6 +182,7 @@ static ssize_t mode_store(struct device *dev,
 	if (mode > APPLETB_KBD_MODE_MAX)
 		return -EINVAL;
 
+	cancel_work_sync(&kbd->mode_work);
 	ret = appletb_kbd_set_mode(kbd, mode);
 
 	return ret < 0 ? ret : size;
@@ -209,16 +210,18 @@ static int appletb_tb_key_to_slot(unsigned int code)
 	}
 }
 
-static void appletb_inactivity_timer(struct timer_list *t)
+static void appletb_inactivity_work(struct work_struct *work)
 {
-	struct appletb_kbd *kbd = timer_container_of(kbd, t, inactivity_timer);
+	struct appletb_kbd *kbd = container_of(to_delayed_work(work),
+					       struct appletb_kbd,
+					       inactivity_work);
 
 	if (kbd->backlight_dev && appletb_tb_autodim) {
 		if (!kbd->has_dimmed) {
 			backlight_device_set_brightness(kbd->backlight_dev, 1);
 			kbd->has_dimmed = true;
-			mod_timer(&kbd->inactivity_timer,
-				jiffies + secs_to_jiffies(appletb_tb_idle_timeout));
+			mod_delayed_work(system_wq, &kbd->inactivity_work,
+					 secs_to_jiffies(appletb_tb_idle_timeout));
 		} else if (!kbd->has_turned_off) {
 			backlight_device_set_brightness(kbd->backlight_dev, 0);
 			kbd->has_turned_off = true;
@@ -226,16 +229,25 @@ static void appletb_inactivity_timer(struct timer_list *t)
 	}
 }
 
+static void appletb_restore_brightness_work(struct work_struct *work)
+{
+	struct appletb_kbd *kbd = container_of(work, struct appletb_kbd,
+					       restore_brightness_work);
+
+	if (kbd->backlight_dev)
+		backlight_device_set_brightness(kbd->backlight_dev, 2);
+}
+
 static void reset_inactivity_timer(struct appletb_kbd *kbd)
 {
 	if (kbd->backlight_dev && appletb_tb_autodim) {
 		if (kbd->has_dimmed || kbd->has_turned_off) {
-			backlight_device_set_brightness(kbd->backlight_dev, 2);
 			kbd->has_dimmed = false;
 			kbd->has_turned_off = false;
+			schedule_work(&kbd->restore_brightness_work);
 		}
-		mod_timer(&kbd->inactivity_timer,
-			jiffies + secs_to_jiffies(appletb_tb_dim_timeout));
+		mod_delayed_work(system_wq, &kbd->inactivity_work,
+				 secs_to_jiffies(appletb_tb_dim_timeout));
 	}
 }
 
@@ -283,35 +295,18 @@ static void appletb_kbd_inp_event(struct input_handle *handle, unsigned int type
 
 	reset_inactivity_timer(kbd);
 
-	if (type != EV_KEY || code != KEY_FN || !appletb_tb_fn_toggle)
-		return;
-
-	if (kbd->current_mode != APPLETB_KBD_MODE_SPCL &&
-	    kbd->current_mode != APPLETB_KBD_MODE_FN)
-		return;
-
-	if (value == 2)
-		return;
-
-	if (value == 1) {
-		if (kbd->fn_down)
-			return;
-
-		kbd->fn_down = true;
-		kbd->saved_mode = kbd->current_mode;
-		appletb_kbd_set_mode(kbd,
-				     kbd->current_mode == APPLETB_KBD_MODE_SPCL
-				     ? APPLETB_KBD_MODE_FN
-				     : APPLETB_KBD_MODE_SPCL);
-		return;
+	if (type == EV_KEY && code == KEY_FN && appletb_tb_fn_toggle &&
+		(kbd->current_mode == APPLETB_KBD_MODE_SPCL ||
+		 kbd->current_mode == APPLETB_KBD_MODE_FN)) {
+		if (value == 1) {
+			kbd->saved_mode = kbd->current_mode;
+			appletb_kbd_queue_mode(kbd, kbd->current_mode == APPLETB_KBD_MODE_SPCL
+					       ? APPLETB_KBD_MODE_FN : APPLETB_KBD_MODE_SPCL);
+		} else if (value == 0) {
+			if (kbd->saved_mode != kbd->current_mode)
+				appletb_kbd_queue_mode(kbd, kbd->saved_mode);
+		}
 	}
-
-	if (value != 0 || !kbd->fn_down)
-		return;
-
-	kbd->fn_down = false;
-	if (kbd->saved_mode != kbd->current_mode)
-		appletb_kbd_set_mode(kbd, kbd->saved_mode);
 }
 
 static int appletb_kbd_inp_connect(struct input_handler *handler,
@@ -454,8 +449,8 @@ static int appletb_kbd_probe(struct hid_device *hdev, const struct hid_device_id
 		return -ENOMEM;
 
 	kbd->mode_field = mode_field;
-	kbd->suspend_preparing_remove = false;
-	appletb_kbd_reset_state(kbd);
+	mutex_init(&kbd->mode_lock);
+	INIT_WORK(&kbd->mode_work, appletb_kbd_mode_work);
 
 	ret = hid_hw_start(hdev, HID_CONNECT_HIDINPUT);
 	if (ret)
@@ -469,14 +464,14 @@ static int appletb_kbd_probe(struct hid_device *hdev, const struct hid_device_id
 
 	kbd->backlight_dev = backlight_device_get_by_name("t2tb_backlight");
 	if (!kbd->backlight_dev) {
-		ret = dev_err_probe(dev, -EPROBE_DEFER,
-				    "Backlight device not ready, deferring probe\n");
-		goto close_hw;
+		dev_err_probe(dev, -ENODEV, "Failed to get backlight device\n");
 	} else {
 		backlight_device_set_brightness(kbd->backlight_dev, 2);
-		timer_setup(&kbd->inactivity_timer, appletb_inactivity_timer, 0);
-		mod_timer(&kbd->inactivity_timer,
-			jiffies + secs_to_jiffies(appletb_tb_dim_timeout));
+		INIT_DELAYED_WORK(&kbd->inactivity_work, appletb_inactivity_work);
+		INIT_WORK(&kbd->restore_brightness_work,
+			  appletb_restore_brightness_work);
+		mod_delayed_work(system_wq, &kbd->inactivity_work,
+				 secs_to_jiffies(appletb_tb_dim_timeout));
 	}
 
 	kbd->inp_handler.event = appletb_kbd_inp_event;
@@ -505,47 +500,56 @@ static int appletb_kbd_probe(struct hid_device *hdev, const struct hid_device_id
 
 unregister_handler:
 	input_unregister_handler(&kbd->inp_handler);
+	cancel_work_sync(&kbd->mode_work);
 close_hw:
-	if (kbd->backlight_dev) {
-		put_device(&kbd->backlight_dev->dev);
-		timer_delete_sync(&kbd->inactivity_timer);
-	}
 	hid_hw_close(hdev);
 stop_hw:
 	hid_hw_stop(hdev);
+	if (kbd->backlight_dev) {
+		cancel_delayed_work_sync(&kbd->inactivity_work);
+		cancel_work_sync(&kbd->restore_brightness_work);
+		put_device(&kbd->backlight_dev->dev);
+	}
 	return ret;
 }
 
 static void appletb_kbd_remove(struct hid_device *hdev)
 {
 	struct appletb_kbd *kbd = hid_get_drvdata(hdev);
-	bool send_mode_off = false;
 
-	/* Only force MODE_OFF on suspend-driven remove. */
-	if (kbd)
-		send_mode_off = kbd->suspend_preparing_remove &&
-				kbd->current_mode != APPLETB_KBD_MODE_OFF;
+	cancel_work_sync(&kbd->mode_work);
+	appletb_kbd_set_mode(kbd, APPLETB_KBD_MODE_OFF);
 
-	appletb_kbd_teardown(hdev, kbd, send_mode_off);
-
+	input_unregister_handler(&kbd->inp_handler);
 	hid_hw_close(hdev);
 	hid_hw_stop(hdev);
+
+	if (kbd->backlight_dev) {
+		cancel_delayed_work_sync(&kbd->inactivity_work);
+		cancel_work_sync(&kbd->restore_brightness_work);
+		put_device(&kbd->backlight_dev->dev);
+	}
 }
 
 static int appletb_kbd_suspend(struct hid_device *hdev, pm_message_t msg)
 {
 	struct appletb_kbd *kbd = hid_get_drvdata(hdev);
 
-	kbd->suspend_preparing_remove = true;
-	return 0;
+	cancel_work_sync(&kbd->mode_work);
+	kbd->saved_mode = kbd->current_mode;
+
+	/* This callback already runs as part of a USB PM transition. Taking a
+	 * nested runtime-PM reference would wait for that transition to complete
+	 * and deadlock the USB PM state machine.
+	 */
+	return appletb_kbd_set_mode_active(kbd, APPLETB_KBD_MODE_OFF);
 }
 
 static int appletb_kbd_resume(struct hid_device *hdev)
 {
 	struct appletb_kbd *kbd = hid_get_drvdata(hdev);
 
-	kbd->suspend_preparing_remove = false;
-	return 0;
+	return appletb_kbd_set_mode_active(kbd, kbd->saved_mode);
 }
 
 static const struct hid_device_id appletb_kbd_hid_ids[] = {

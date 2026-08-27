@@ -1,7 +1,7 @@
 # t2smc
 
 Minimal SMC driver for T2 Macs. Provides fan control, battery charge limit,
-temperature sensor and RTC access. Hardware monitoring is exposed via
+temperature, power sensor and RTC access. Hardware monitoring is exposed via
 the standard Linux hwmon interface. Requires no other SMC driver.
 
 This is based on applesmc with macsmc patches but rebuilt from scratch.
@@ -75,6 +75,52 @@ done
 HWMON="$(dirname "$(grep -l '^t2smc$' /sys/class/hwmon/hwmon*/name)")"
 ```
 
+## Power telemetry
+
+Every SMC key whose name starts with `P` is discovered dynamically and exposed
+through standard hwmon `powerN_label` and `powerN_input` files. The label is the
+four-character SMC key and the input value is in microwatts:
+
+```sh
+paste "$HWMON"/power*_label "$HWMON"/power*_input
+```
+
+`t2smc` leaves the system battery and charger under the control of the
+mainline ACPI SBS drivers. It exposes additional SMC telemetry on its hwmon
+device without registering another battery:
+
+```text
+power_event_count
+power_last_event_ns
+smc_battery_capacity_percent
+smc_battery_voltage_uv
+smc_battery_current_ua
+smc_battery_power_uw
+smc_battery_charge_full_uah
+smc_battery_charge_now_uah
+smc_battery_cycle_count
+smc_adapter_voltage_uv
+smc_adapter_current_ua
+smc_adapter_power_uw
+```
+
+Files for SMC keys not available on a particular model return no data. Values
+are read on demand. There is no periodic kernel polling.
+
+The driver subscribes to the standard power-supply notifier chain. An ACPI SBS
+battery or adapter notification schedules an SMC status snapshot and increments
+`power_event_count`.
+
+To verify the event path, read the counter, connect or disconnect the charger,
+and read it again:
+
+```sh
+HWMON="$(dirname "$(grep -l '^t2smc$' /sys/class/hwmon/hwmon*/name)")"
+cat "$HWMON/power_event_count"
+# Connect or disconnect the charger.
+cat "$HWMON/power_event_count"
+```
+
 ### Fan control
 
 We do offer a program to control the fans on T2 MacBooks (https://github.com/deqrocks/t2-fancontrol)
@@ -134,6 +180,8 @@ Macs include:
 | TGDD   | GPU die (digital)       |
 | TGDF   | GPU die (filtered)      |
 | TGVP   | GPU voltage regulator   |
+| TC0E   | CPU 1 die 1             |
+| TC0F   | CPU 1 die 2             |
 | TC0P   | CPU proximity           |
 | TB0T   | Battery temperature     |
 
