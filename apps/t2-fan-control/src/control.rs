@@ -82,9 +82,15 @@ impl Controller {
             let should_apply = should_apply_target(self.last_applied_percent, target_percent);
 
             for fan in fans {
+                // Failsafe: a missing target means we have no usable temperature
+                // reading (sensor read failed / not yet sampled). Once we have
+                // taken the fans out of SMC auto we own cooling, so an unknown
+                // temperature must drive them to MAX, never min — running a
+                // sensorless fan at minimum is how the package reaches Tjmax and
+                // the platform force-suspends.
                 let rpm = target_percent
                     .map(|percent| fan.percent_to_rpm(percent))
-                    .unwrap_or(fan.min_speed);
+                    .unwrap_or(fan.max_speed);
 
                 if should_apply {
                     fan.set_target_speed(rpm)?;
