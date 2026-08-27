@@ -25,6 +25,13 @@
   makeFlags ? [ ],
   nativeBuildInputs ? [ ],
   extraPostPatch ? "",
+  # Subdirectories to build in order, each via its own Makefile, in a single
+  # unpacked source tree. Used by the t2bce split (dma → core → vhci → audio),
+  # whose per-module Makefiles reference their siblings' headers and
+  # `Module.symvers` by relative path, so building them in place and in order
+  # resolves the cross-module symbol/include deps with no extra plumbing.
+  # Empty = the stdenv default single `make` in the source root.
+  buildSubdirs ? [ ],
   meta ? { },
 }:
 
@@ -45,6 +52,19 @@ stdenv.mkDerivation {
   ];
 
   postPatch = extraPostPatch;
+
+  # For the multi-module (t2bce split) build, run each subdirectory's Makefile
+  # in order in the same unpacked tree so later modules pick up the earlier
+  # ones' Module.symvers (see `buildSubdirs`). Otherwise fall through to the
+  # stdenv default (a single `make` in the source root).
+  buildPhase = lib.optionalString (buildSubdirs != [ ]) ''
+    runHook preBuild
+    for sub in ${lib.escapeShellArgs buildSubdirs}; do
+      echo "building kernel module subdir: $sub"
+      make -C "$sub" $makeFlags -j"$NIX_BUILD_CORES"
+    done
+    runHook postBuild
+  '';
 
   # Cover every variable name the assorted in-repo Makefiles use to find the
   # kernel build tree and release string, so a single builder fits them all.
