@@ -80,59 +80,64 @@ in
       type = lib.types.listOf lib.types.str;
       default = [
         "t2smc"
-        "t2bce"
+        # The BCE stack split into four cross-dependent modules upstream. Module
+        # softdeps enforce ordering (audio/vhci `pre: t2bce_core`, core
+        # `post: t2bce_vhci`), but list them in dependency order anyway.
+        "t2bce_dma"
+        "t2bce_core"
+        "t2bce_vhci"
+        "t2bce_audio"
         "t2bdrm"
         "t2hid"
-        "t2touchbar_cfg"
         "t2touchbar_bl"
         "t2touchbar_kbd"
         "t2mfi_fastcharge"
         "t2gmux"
         "t2thunderbolt"
+        "t2smp"
         "hid_t2magicmouse"
       ];
       description = ''
         Loadable module names (not package names) to load at boot. Note these
         differ from the package names: the `t2touchbar` package builds `t2hid`,
-        `t2touchbar_cfg`, `t2touchbar_bl` and `t2touchbar_kbd`.
+        `t2touchbar_bl` and `t2touchbar_kbd`, and the `t2bce` package builds the
+        four split modules `t2bce_dma`, `t2bce_core`, `t2bce_vhci` and
+        `t2bce_audio`.
 
-        `t2touchbar_cfg` is the USB configuration selector that switches the
-        Touch Bar display to its HID+display configuration before the interface
-        drivers bind. `t2bce` carries `MODULE_SOFTDEP("pre: t2touchbar_cfg")`,
-        so it is also pulled in ahead of t2bce automatically.
+        The old `t2touchbar_cfg` USB configuration selector is gone: selecting
+        the Touch Bar display's HID+display USB configuration moved to
+        userspace (react-drm's `99-react-drm.rules` udev rule and
+        `react-drm-tb-detach` helper drive `bConfigurationValue` when the
+        `05ac:8302` device appears). Enable {option}`services.react-drm` for it.
 
-        The `apfs` driver (package name `linux-apfs-rw`) is intentionally not
-        listed: like any filesystem driver it is autoloaded by the kernel when
-        an APFS volume is mounted, so it only needs to be *available* (shipped
-        via {option}`hardware.kait2en.modulePackages` + depmod), not
-        force-loaded at boot.
+        The out-of-tree `apfs` driver was dropped (upstream deleted
+        `modules/apfs`). NixOS users who must mount the macOS APFS volumes can
+        add nixpkgs' own `config.boot.kernelPackages.apfs` to
+        {option}`boot.extraModulePackages` instead; like any filesystem driver
+        it is then autoloaded on mount, not force-loaded here.
       '';
     };
 
     initrdModules = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [
-        "t2smc"
-        "t2bce"
-        "t2bdrm"
+        "t2bce_dma"
         "t2hid"
-        "t2touchbar_cfg"
-        "t2touchbar_bl"
-        "t2touchbar_kbd"
         "hid_t2magicmouse"
-        "t2mfi_fastcharge"
-        "t2gmux"
-        "t2thunderbolt"
+        "t2bce_core"
+        "t2bce_vhci"
       ];
       description = ''
         Modules to load from the initramfs (early), mirroring the upstream
-        `dracut --add-drivers` list in rebuild-initramfs.sh. Needed for the
-        drivers that must bind before the root device / display come up.
+        `dracut --force-drivers` list in the installer's `kait2en-prepare`
+        (`t2bce_dma t2hid hid_t2magicmouse t2bce_core t2bce_vhci`). These are
+        the input + BCE essentials that must bind before the display and root
+        device come up; the rest (fan/SMC, audio, gmux, thunderbolt, …) load
+        at normal boot.
 
-        Includes `t2touchbar_cfg` (selects the Touch Bar display USB
-        configuration before BCE enumeration; t2bce softdeps on it) and
-        `hid_t2magicmouse` so the Magic Trackpad/Mouse HID driver is present in
-        early boot.
+        `t2hid` replaces the removed `t2touchbar_cfg` here: the display USB
+        configuration is now selected in userspace by react-drm, and `t2hid`
+        must be present early so the Touch Bar HID interface binds.
       '';
     };
 
@@ -147,7 +152,6 @@ in
         "hid_appletb_kbd"
         "hid_magicmouse"
         "appletbdrm"
-        "thunderbolt"
         "apple_bce"
         "apple_mfi_fastcharge"
         "apple_gmux"
@@ -156,6 +160,35 @@ in
         Conflicting in-tree / upstream drivers to blacklist, matching the
         `module_blacklist=` kernel argument the Fedora installer sets. The
         KaiT2en out-of-tree drivers replace these.
+
+        Note `thunderbolt` is no longer blacklisted: upstream reworked
+        `t2thunderbolt` so it no longer conflicts with the in-tree driver (the
+        Fedora installer's BLACKLIST_MODULES dropped it too).
+      '';
+    };
+
+    amdgpuAspm = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Add `amdgpu.aspm=1` to enable ASPM on the discrete AMD GPU. The Fedora
+        installer sets this only on MacBookPro15,1/15,3/16,1/16,4 (the models
+        with a supported AMD dGPU). NixOS cannot PCI-probe at eval time, so the
+        matching per-model profile turns it on; leave it off on integrated-GPU
+        machines.
+      '';
+    };
+
+    acpiOsiOverride = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Add the `acpi_osi=!Darwin` and `acpi_osi="Windows 2012"` overrides.
+        Upstream *removes* these on Titan Ridge (8086:15e8/15eb) and Ice Lake
+        (8086:8a0d/8a17) Thunderbolt machines, where they break hotplug, and
+        leaves them in place otherwise. NixOS cannot PCI-probe at eval time, so
+        this defaults on and the profiles for those newer Thunderbolt
+        generations set it false.
       '';
     };
 
@@ -211,17 +244,25 @@ in
     boot.blacklistedKernelModules = cfg.blacklistedModules;
 
     boot.kernelParams = [
+      "i915.enable_guc=2"
       "intel_iommu=on"
       "iommu=pt"
       "pm_async=off"
+      "brcmfmac.p2pon=0"
+      "pcie_aspm=force"
+      "pcie_aspm.policy=powersave"
+      "pcie_ports=native"
+      "pci=noaer"
+      "mem_sleep_default=deep"
+      "initcall_blacklist=cmos_init,magicmouse_driver_init"
+    ]
+    ++ lib.optionals cfg.acpiOsiOverride [
       "acpi_osi=!Darwin"
       # The space is kept together by the kernel's command-line quote
       # handling; NixOS does not quote params, so the quotes are literal here.
       ''acpi_osi="Windows 2012"''
-      "pcie_ports=native"
-      "mem_sleep_default=deep"
-      "initcall_blacklist=cmos_init,magicmouse_driver_init"
     ]
+    ++ lib.optional cfg.amdgpuAspm "amdgpu.aspm=1"
     ++ cfg.extraKernelParams;
   };
 }
