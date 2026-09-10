@@ -26,9 +26,16 @@ let
   cfg = config.services.react-drm;
 
   # The shipped udev rules invoke /bin/chown and /bin/chmod, absent on NixOS.
-  # Rewrite them to coreutils store paths so RUN+= works.
-  udevRules = pkgs.runCommand "99-react-drm.rules" { } ''
-    substitute ${cfg.package}/share/react-drm/system/99-react-drm.rules "$out" \
+  # Rewrite them to coreutils store paths so RUN+= works. Installed as a
+  # rules.d tree (not read back as a string) so this stays a plain build-time
+  # dependency: reading a derivation's contents at eval time (IFD) would force
+  # `${cfg.package}` — the whole react-drm npm/tsc/node-gyp build — to run
+  # during evaluation, e.g. inside a fleet cache-probe that only means to
+  # evaluate toplevels.
+  udevRules = pkgs.runCommand "react-drm-udev-rules" { } ''
+    mkdir -p "$out/etc/udev/rules.d"
+    substitute ${cfg.package}/share/react-drm/system/99-react-drm.rules \
+      "$out/etc/udev/rules.d/99-react-drm.rules" \
       --replace-fail '/bin/chown' '${pkgs.coreutils}/bin/chown' \
       --replace-fail '/bin/chmod' '${pkgs.coreutils}/bin/chmod'
   '';
@@ -70,8 +77,9 @@ in
 
   config = lib.mkIf cfg.enable {
     # The udev rules reference the `video` and `input` groups; both exist by
-    # default on NixOS. Drop the rules in via services.udev.extraRules.
-    services.udev.extraRules = builtins.readFile "${udevRules}";
+    # default on NixOS. Drop the rules in as a package so udev collects them
+    # from the store at system-build time — no IFD (see udevRules above).
+    services.udev.packages = [ udevRules ];
 
     # Touch Bar key injection needs /dev/uinput present.
     boot.kernelModules = [ "uinput" ];
