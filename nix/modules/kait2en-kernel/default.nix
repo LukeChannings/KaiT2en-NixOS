@@ -251,7 +251,7 @@ in
       "brcmfmac.p2pon=0"
       "pcie_aspm=force"
       "pcie_aspm.policy=powersave"
-      "pcie_ports=native"
+      "pcie_ports=compat"
       "pci=noaer"
       "mem_sleep_default=deep"
       "initcall_blacklist=cmos_init,magicmouse_driver_init"
