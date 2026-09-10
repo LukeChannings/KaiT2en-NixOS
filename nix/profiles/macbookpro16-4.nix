@@ -46,7 +46,7 @@
   # t2-journal has no system integration — just ship the CLI.
   environment.systemPackages = [ (pkgs.callPackage ../../apps/t2-journal/package.nix { }) ];
 
-  services.t2-apple-audio-dsp = {
+  services.t2bce-audio-dsp = {
     enable = true;
     model = "16_4";
   };

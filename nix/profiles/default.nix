@@ -6,7 +6,7 @@
 # model-specific quirks. Import the one that matches your machine and it turns
 # on the right pieces with the right settings.
 #
-# The model ids mirror the t2-apple-audio-dsp project:
+# The model ids mirror upstream's t2bce_audio-dsp firs/<model> tree:
 #
 #   - macbookpro16-1  → MacBookPro16,1 (audio DSP model "16_1")
 #   - macbookpro16-4  → MacBookPro16,4 (audio DSP model "16_4")

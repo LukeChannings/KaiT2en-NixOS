@@ -10,9 +10,11 @@
 # Those profiles `Include` files from the stock tree (`/common/pcm/split.conf`),
 # so we can't ship them standalone: this derivation copies the upstream
 # `alsa-ucm-conf` ucm2 tree and overlays the AppleT2 files on top, yielding one
-# self-contained tree. Point ALSA at it with `ALSA_CONFIG_UCM2` (the
-# `t2-apple-audio-dsp` NixOS module does this) or use it to override
-# `alsa-ucm-conf`. nixpkgs' `alsa-ucm-conf` ships no AppleT2 profile of its own,
+# self-contained tree. Point ALSA at it with `ALSA_CONFIG_UCM2` or use it to
+# override `alsa-ucm-conf`. (The `t2bce-audio-dsp` NixOS module splits the card
+# via the kekrby ACP profile-set instead, so it does not consume this; the tree
+# is exposed for the UCM-based split.) nixpkgs' `alsa-ucm-conf` ships no AppleT2
+# profile of its own,
 # so there is nothing to remove first (unlike Fedora's).
 {
   lib,

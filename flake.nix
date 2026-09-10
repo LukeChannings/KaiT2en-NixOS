@@ -58,7 +58,7 @@
           t2-fan-control = ./nix/modules/t2-fan-control;
           t2-smc-control = ./nix/modules/t2-smc-control;
           react-drm = ./nix/modules/react-drm;
-          t2-apple-audio-dsp = ./nix/modules/t2-apple-audio-dsp;
+          t2bce-audio-dsp = ./nix/modules/t2bce-audio-dsp;
           kait2en-suspend = ./nix/modules/kait2en-suspend;
           t2-ncm = ./nix/modules/t2-ncm;
           t2-power-explorer = ./nix/modules/t2-power-explorer;
@@ -69,7 +69,7 @@
 
         # Per-device profiles: each imports the aggregate modules and switches
         # on that specific T2 Mac model's settings (currently the audio DSP
-        # graph from t2-apple-audio-dsp). Import the one matching your machine,
+        # graph from t2bce-audio-dsp). Import the one matching your machine,
         # e.g. `imports = [ inputs.kait2en.nixosProfiles.macbookpro16-1 ];`.
         nixosProfiles = {
           macbookpro16-1 = ./nix/profiles/macbookpro16-1.nix;
@@ -86,8 +86,9 @@
           kait2en = (final.callPackage ./apps { }) // {
             kernelModulesFor = kernel: final.callPackage ./modules { inherit kernel; };
             # The ALSA UCM2 tree carrying the Apple T2 split-channel profiles
-            # (stock alsa-ucm-conf + our AppleT2 use cases). The
-            # t2-apple-audio-dsp NixOS module points ALSA_CONFIG_UCM2 at it.
+            # (stock alsa-ucm-conf + our AppleT2 use cases). Exposed for the
+            # UCM-based split; the t2bce-audio-dsp NixOS module itself uses the
+            # kekrby ACP profile-set split, so it does not consume this.
             t2bce_audio-alsa-ucm-conf = final.callPackage ./nix/pkgs/t2bce_audio-alsa-ucm-conf { };
             # Stock 7.0 + the SPI-HID ABI patch the T2 HID modules need.
             # Applied directly (not callPackage) so the kernel's own chainable
