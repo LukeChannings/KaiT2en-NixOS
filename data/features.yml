@@ -69,35 +69,54 @@ items:
     help: >-
       Powertop and turbostat readings from different T2 models.
 
-  - id: keyboard-backlight-reenumeration
-    title: "Keyboard backlight after re-enumeration"
+  - id: apple-t2-panel-self-refresh
+    title: "Panel Self Refresh on Apple T2 displays"
     state: in-progress
     upstream: submitted
+    version: v2
+    project: Linux kernel
+    subsystem: DRM / i915
+    authors:
+      - 4f1sh3r
+    link: "https://lore.kernel.org/all/20260907083753.41393-1-alexander.fischer@kait2en.org/"
+    updated: "2026-09-07"
+    notes: >-
+      Enables PSR on Apple T2 eDP panels using the sink-specific DPCD setup
+      and capture sequence, reducing idle display power and enabling deeper
+      package C-states up to PC10.
+
+
+  # --- Available -------------------------------------------------------------
+
+  - id: keyboard-backlight-reenumeration
+    title: "Keyboard backlight after re-enumeration"
+    state: available
+    upstream: merged
     project: upower
     authors:
       - deqrocks
     link: "https://gitlab.freedesktop.org/upower/upower/-/merge_requests/335"
     updated: "2026-07-29"
-    notes: The backlight did not come back on after the keyboard re-enumerated.
+    notes: >-
+      The backlight did not come back on after the keyboard re-enumerated.
+      Was merged and is expected to ship with kernel 7.4.
 
   - id: thunderbolt-device-links
     title: "Thunderbolt device links"
-    state: in-progress
-    upstream: submitted
-    version: v8
+    state: available
+    upstream: merged
+    version: v9
     project: Linux kernel
     subsystem: Thunderbolt
     authors:
-      - ruiCON
+      - byte
       - deqrocks
     link: "https://lore.kernel.org/all/20260817101329.1517-1-atharvatiwarilinuxdev@gmail.com/"
     updated: "2026-08-17"
     notes: >-
-      Maintainers did not accept v7. The three-patch v8 series moves Apple
-      device-link discovery into the Thunderbolt PCI code and adds Titan Ridge
-      and Ice Lake support separately.
-
-  # --- Available -------------------------------------------------------------
+      The three-patch series moves Apple device-link discovery into the 
+      Thunderbolt PCI code and adds Titan Ridge and Ice Lake support separately.
+      Was merged and is expected to ship with kernel 7.4.
 
   - id: apple-t2-early-cpu-offlining
     title: "Fast CPU restore after suspend"
@@ -188,6 +207,19 @@ items:
       - deqrocks
     link: "https://lore.kernel.org/linux-input/20260722141221.13844-1-dev@deq.rocks/"
     updated: "2026-07-22"
+
+  - id: ignore-trackpad
+    title: "Trackpad on T2 Macs is incorrectly bound by the hid-apple driver"
+    state: available
+    upstream: submitted
+    version: v1
+    project: Linux kernel
+    subsystem: HID / Input
+    authors:
+      - AdityaGarg8
+    link: "https://lore.kernel.org/linux-input/20260903064407.27755-1-aditya.garg@linux.dev/"
+    updated: "2026-09-03"
+    notes: Trackpad and keyboard share the same VID/PID. Use the existing APPLE_IGNORE_MOUSE quirk.
 
   - id: dgpu-wakeup-15-1
     title: "dGPU wakes up on MacBookPro15,1"

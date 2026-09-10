@@ -37,7 +37,6 @@ struct bce_vhci_transfer_queue {
     struct list_head cancel_urb_list;
 
     struct work_struct w_reset;
-    struct work_struct w_resume;
     struct work_struct w_cancel;
 };
 enum bce_vhci_urb_state {
@@ -57,13 +56,10 @@ struct bce_vhci_urb {
     bool is_control;
     enum bce_vhci_urb_state state;
     int received_status;
-    u32 send_offset;
     u32 receive_offset;
-    struct t2bce_core_dma_segment *sg_segments;
-    dma_addr_t sg_segments_dma;
-    size_t sg_segments_size;
-    unsigned int sg_segment_count;
-    bool sg_segments_for_device;
+    u32 request_end;
+    u32 submitted_length;
+    struct t2bce_core_segment_list *sg_list;
     struct list_head cancel_list;
     int cancel_status;
     bool cancel_was_active;
@@ -77,10 +73,9 @@ int bce_vhci_transfer_queue_do_pause(struct bce_vhci_transfer_queue *q);
 int bce_vhci_transfer_queue_do_resume(struct bce_vhci_transfer_queue *q);
 int bce_vhci_transfer_queue_pause(struct bce_vhci_transfer_queue *q, enum bce_vhci_pause_source src);
 int bce_vhci_transfer_queue_resume(struct bce_vhci_transfer_queue *q, enum bce_vhci_pause_source src);
-int bce_vhci_transfer_queue_suspend_pause(struct bce_vhci_transfer_queue *q);
 void bce_vhci_transfer_queue_request_reset(struct bce_vhci_transfer_queue *q);
 
-int bce_vhci_urb_create(struct bce_vhci_transfer_queue *q, struct urb *urb);
+int bce_vhci_urb_create(struct bce_vhci_transfer_queue *q, struct urb *urb, gfp_t mem_flags);
 int bce_vhci_urb_request_cancel(struct bce_vhci_transfer_queue *q, struct urb *urb, int status);
 
 #endif //BCEDRIVER_TRANSFER_H

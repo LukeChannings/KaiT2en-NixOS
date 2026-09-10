@@ -4,7 +4,7 @@ KAIT2EN keeps Fedora's vanilla kernel and installs T2 hardware support as a
 separate layer. The changes we are doing to your system are documented here to
 provide transparency to users and devs.
 
-## Project checkout and updater
+## Repo location and updater
 
 The guided installer creates a clean checkout of the `main` branch at:
 
@@ -24,17 +24,17 @@ checkout with an unexpected Git remote. Its persistent files are:
 
 ## Kernel modules
 
-The installer copies each module source to `/usr/src/<name>-<version>/`,
-registers it with DKMS and builds it for the running Fedora kernel. DKMS keeps
+The installer copies each DKMS source package to `/usr/src/<name>-<version>/`,
+registers it and builds it for the running Fedora kernel. DKMS keeps
 its build state below `/var/lib/dkms/` and rebuilds the modules for later
 kernel updates. `modinfo -n <module>` prints the installed kernel object path.
 
 | DKMS source | Installed module | Purpose |
 | --- | --- | --- |
-| `t2bce_dma` | `t2bce_dma` | Shared DMA queue engine for T2 BCE clients |
-| `t2bce_core` | `t2bce_core` | T2 bridge PCI device, mailbox, power management and transport |
-| `t2bce_vhci` | `t2bce_vhci` | Virtual USB host for internal T2 input devices |
-| `t2bce_audio` | `t2bce_audio` | Apple T2 audio driver |
+| `t2bce_stack` | `t2bce_dma` | Shared DMA queue engine for T2 BCE clients |
+| `t2bce_stack` | `t2bce_core` | T2 bridge PCI device, mailbox, power management and transport |
+| `t2bce_stack` | `t2bce_vhci` | Virtual USB host for internal T2 input devices |
+| `t2bce_stack` | `t2bce_audio` | Apple T2 audio driver |
 | `t2smc` | `t2smc` | Fan, temperature, charge-limit and RTC access through hwmon |
 | `t2bdrm` | `t2bdrm` | Touch Bar DRM display device |
 | `t2touchbar` | `t2hid`, `t2touchbar_bl`, `t2touchbar_kbd` | Internal HID quirks, Touch Bar backlight and keyboard mode |
@@ -145,9 +145,11 @@ audio behavior and diagnostics.
 | `/usr/local/libexec/kait2en/kait2en-suspend.sh` | Handles the BCM4377 suspend workaround described below |
 | `/etc/udev/rules.d/90-kait2en-t2-network.rules` | Renames the internal T2 debug interface to `t2_ncm` and excludes it from NetworkManager |
 | `/etc/modprobe.d/kait2en-silent-blacklist.conf` | Silently ignores attempts to load drivers replaced by KAIT2EN modules |
-| `/etc/systemd/system/kait2en-t2-ncm-down.service` | Starts when `t2_ncm` appears |
-| `/usr/local/libexec/kait2en/kait2en-t2-ncm-down.sh` | Keeps the internal debug interface down |
-| `/usr/share/plymouth/themes/kait2en/` | Fedora's spinner theme with the KAIT2EN watermark |
+| `/usr/share/plymouth/themes/kait2en/` | macOS-style boot splash with a KAIT2EN logo |
+| `/usr/share/pixmaps/kait2en-gdm-logo.png` | White and red KAIT2EN logo shown by GDM |
+| `/etc/dconf/db/gdm.d/00-kait2en` | Configures the GDM logo and solid black login background |
+| `/usr/share/backgrounds/kait2en/gdm-black.png` | Black GDM background image |
+| `/usr/share/gnome-shell/gnome-shell-theme.gresource` | GNOME Shell theme patched so the GDM and lock-screen shield render black |
 | `/etc/dracut.conf.d/90-kait2en-input.conf` | Keeps the internal keyboard drivers in initramfs images built during kernel updates |
 | `/boot/initramfs-<running-kernel>.img` | Rebuilt by Dracut after modules and ACPI handling are complete |
 
@@ -202,36 +204,57 @@ outcome of the Bluetooth step is recorded in the installed system at:
 /var/log/kait2en/bluetooth-firmware.log
 ```
 
-## Desktop applications
+## Applications
 
-`t2-fan-control`, `t2-smc-control`, `t2-power-explorer`, `t2-cpu-control`, and
-`t2-power-tune` are installed system-wide under `/usr/local`. The
-MacBookPro15,1 gets `t2-hybrid-gpu-control`; other MacBook Pro models with Intel
-and AMD display devices get `t2-dgpu-control`.
+`t2-fan-control`, `t2-smc-control`, `t2-power-explorer`, `t2-cpu-control`, `t2-journal`, `kernel-builder`, and `t2-power-tune` are installed system-wide under `/usr/local`.
+
+MacBookPro15,1 gets `t2-hybrid-gpu-control`; other MacBook Pro models with Intel and AMD display devices get `t2-dgpu-control`.
+All KAIT2EN desktop applications use the shared header wordmark at
+`/usr/local/share/kait2en/kait2en-wordmark.png`.
 
 | Application | Installed files |
 | --- | --- |
 | T2 Fan Control | `/usr/local/bin/t2-fancontrol-gtk`, `/usr/local/share/applications/org.t2fancontrol.gtk.desktop`, `/usr/local/share/icons/hicolor/scalable/apps/org.t2fancontrol.gtk.svg`, `/usr/local/lib/systemd/system/t2-fancontrol.service` |
-| T2 SMC Control | `/usr/local/bin/t2-smc-control`, `/usr/local/share/applications/org.t2smccontrol.gtk.desktop`, `/usr/local/share/icons/hicolor/scalable/apps/org.t2smccontrol.gtk.svg`, `/usr/local/lib/systemd/system/kait2en-t2-smc-charge-limit.service` |
+| T2 SMC Control | `/usr/local/bin/t2-smc-control`, `/usr/local/share/applications/org.t2smccontrol.gtk.desktop`, `/usr/local/share/icons/hicolor/scalable/apps/org.t2smccontrol.gtk.svg` |
 | T2 Power Explorer | `/usr/local/bin/t2-power-explorer`, `/usr/local/libexec/t2-power-explorer-status`, `/usr/local/share/applications/org.t2powerexplorer.gtk.desktop`, `/usr/local/share/icons/hicolor/scalable/apps/org.t2powerexplorer.gtk.svg`, `/usr/share/polkit-1/actions/org.t2powerexplorer.policy` |
+| T2 Journal | `/usr/local/bin/t2journal` |
 | T2 CPU Control | `/usr/local/bin/t2-cpu-control`, `/usr/local/libexec/t2-cpu-control-helper`, `/usr/local/libexec/t2-cpu-control-status`, `/usr/local/libexec/t2-cpu-kernel-benchmark`, `/usr/local/lib/systemd/system/t2-cpu-control.service`, `/usr/local/lib/systemd/system-sleep/t2-cpu-control`, `/usr/local/share/applications/org.t2cpucontrol.gtk.desktop`, `/usr/local/share/icons/hicolor/scalable/apps/org.t2cpucontrol.gtk.svg`, `/usr/share/polkit-1/actions/org.t2cpucontrol.policy` |
+| T2 Kernel Builder | `/usr/local/bin/t2-kernel-builder`, `/usr/local/libexec/t2-kernel-builder-cleanup`, `/usr/local/libexec/t2-kernel-builder/build.sh`, `/usr/local/libexec/t2-kernel-builder/configs/*.config`, `/usr/local/share/applications/org.t2kernelbuilder.gtk.desktop`, `/usr/local/share/icons/hicolor/scalable/apps/org.t2kernelbuilder.gtk.svg`, `/usr/local/share/polkit-1/actions/org.t2kernelbuilder.gtk.policy` |
 | T2 Power Tune | `/usr/local/bin/t2-power-tune`, `/usr/local/libexec/t2-power-tune-helper`, `/usr/local/libexec/t2-power-tune-status`, `/usr/local/share/applications/org.t2powertune.gtk.desktop`, `/usr/local/share/icons/hicolor/scalable/apps/org.t2powertune.gtk.svg`, `/usr/share/polkit-1/actions/org.t2powertune.policy` |
 | T2 Hybrid GPU Control | `/usr/local/bin/t2-hybrid-gpu-control`, `/usr/local/libexec/t2-hybrid-gpu-control-helper`, `/usr/local/libexec/t2-hybrid-gpu-control-status`, `/usr/local/share/applications/org.t2hybridgpucontrol.gtk.desktop`, `/usr/local/share/icons/hicolor/scalable/apps/org.t2hybridgpucontrol.gtk.svg`, `/usr/share/polkit-1/actions/org.t2hybridgpucontrol.gtk.policy`, `/usr/share/polkit-1/actions/org.t2hybridgpucontrol.gtk.status.policy` |
 | T2 GPU Control | `/usr/local/bin/t2-dgpu-control`, `/usr/local/libexec/t2-dgpu-control-helper`, `/usr/local/libexec/t2-dgpu-control-status`, `/usr/local/share/applications/org.t2dgpucontrol.gtk.desktop`, `/usr/local/share/icons/hicolor/scalable/apps/org.t2dgpucontrol.gtk.svg`, `/usr/local/lib/systemd/system/kait2en-dgpu-off.service`, `/usr/local/lib/systemd/system/kait2en-dgpu-suspend.service`, `/usr/local/lib/systemd/system/kait2en-amdgpu-profile.service`, `/usr/local/lib/systemd/system/kait2en-amdgpu-profile-resume.service`, `/usr/share/polkit-1/actions/org.t2dgpucontrol.gtk.policy`, `/usr/share/polkit-1/actions/org.t2dgpucontrol.gtk.status.policy` |
 
-T2 SMC Control creates `/etc/t2-smc-control/config.txt` only after a charge
-limit is saved. Its system service restores that value at boot. T2 Fan Control's
-service starts immediately and persists fan curves across boot and resume.
-T2 Hybrid GPU Control does not install system services. T2 GPU Control enables
-its units only when the corresponding options are applied in the app. Both
-privileged helpers validate the GPU layout and accept only the fixed operations
-exposed by their UI.
+T2 Fan Control's service starts immediately and persists fan curves across
+boot and resume. T2 Hybrid GPU Control does not install system services.
+T2 GPU Control enables its units only when the corresponding options are
+applied in the app. Both privileged helpers validate the GPU layout and accept
+only the fixed operations exposed by their UI.
 
 T2 Power Tune reads package C-state residency and exposes PCIe ASPM, runtime
 power management, LTR ignore, and additional power tunables. The optional
 `/etc/systemd/system/kait2en-power-tune.service` is created by the app only when
 the user chooses persistent settings. Its runtime selection cache is stored at
 `/run/t2-power-tune/items.json` and disappears on reboot.
+
+T2 Journal stores the last successfully parsed BridgeOS log snapshot and a
+cache of recently discovered RemoteXPC ports for each desktop user:
+
+```text
+~/.local/state/t2-journal/bridgeos.jsonl
+~/.local/state/t2-journal/remote-ports
+```
+
+`$XDG_STATE_HOME` replaces `~/.local/state` when it is set. The snapshot is
+created on the first query or explicit refresh and is atomically replaced only
+after a successful download and parse. See [T2 Journal](../post-install/kait2en-applications.md#t2-journal)
+for the required network setup.
+
+T2 Kernel Builder keeps downloaded sources, build trees and completed-build
+markers below `$XDG_CACHE_HOME/t2-kernel-builder/build` (normally
+`~/.cache/t2-kernel-builder/build`) and its saved UI state below
+`$XDG_CONFIG_HOME/t2-kernel-builder` (normally `~/.config/t2-kernel-builder`).
+Kernels installed through the app add their normal files below `/boot` and
+`/lib/modules/<kernel>/`; package-managed builds are installed through DNF.
 
 `react-drm` is installed for the desktop user only when the DMI product name is
 one of `MacBookPro15,1`, `MacBookPro15,2`, `MacBookPro15,3`, `MacBookPro15,4`,
@@ -240,6 +263,7 @@ one of `MacBookPro15,1`, `MacBookPro15,2`, `MacBookPro15,3`, `MacBookPro15,4`,
 ```text
 ~/react-drm/
 ~/.config/systemd/user/react-drm.service
+~/.local/share/applications/react-drm-config-gui.desktop
 /etc/udev/rules.d/99-react-drm.rules
 ```
 

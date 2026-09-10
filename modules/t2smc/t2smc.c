@@ -2,7 +2,7 @@
 /*
  * t2smc - Minimal SMC driver for T2 Macs
  *
- * Copyright (C) 2026 André Eikmeyer <andre.eikmeyer@gmail.com>
+ * Copyright (C) 2026 André Eikmeyer <andre.eikmeyer@kait2en.org>
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -22,6 +22,7 @@
 #include <linux/err.h>
 #include <linux/ktime.h>
 #include <linux/power_supply.h>
+#include <linux/platform_device.h>
 #include <linux/rtc.h>
 #include <linux/workqueue.h>
 
@@ -123,6 +124,10 @@ struct t2smc_device {
 	struct device *hwmon_dev;
 	bool has_chls;
 	bool has_chwa;
+
+	/* guards @battery against the async attach from power_event_work */
+	struct mutex battery_lock;
+	struct power_supply *battery;
 
 	struct notifier_block power_supply_nb;
 	struct work_struct power_event_work;
@@ -1023,13 +1028,39 @@ static int t2smc_write_charge_limit_method(struct t2smc_device *t2, u8 val)
 	return 0;
 }
 
+static int t2smc_get_charge_limit(struct t2smc_device *t2, u8 *val)
+{
+	if (t2smc_read_key(t2, T2SMC_CHARGE_LIMIT, val, 1))
+		return -ENODEV;
+	return 0;
+}
+
+static int t2smc_set_charge_limit(struct t2smc_device *t2, u8 val)
+{
+	if (val > 100)
+		return -EINVAL;
+	if (t2smc_write_key(t2, T2SMC_CHARGE_LIMIT, &val, 1))
+		return -ENODEV;
+	if (t2smc_write_charge_limit_method(t2, val))
+		return -ENODEV;
+
+	dev_dbg(t2->dev, "charge limit set to %u%%\n", val);
+
+	mutex_lock(&t2->battery_lock);
+	if (t2->battery)
+		power_supply_changed(t2->battery);
+	mutex_unlock(&t2->battery_lock);
+
+	return 0;
+}
+
 static ssize_t charge_limit_show(struct device *dev,
 				  struct device_attribute *attr, char *buf)
 {
 	struct t2smc_device *t2 = dev_get_drvdata(dev);
 	u8 val;
 
-	if (t2smc_read_key(t2, T2SMC_CHARGE_LIMIT, &val, 1))
+	if (t2smc_get_charge_limit(t2, &val))
 		return -ENODEV;
 	return sysfs_emit(buf, "%d\n", val);
 }
@@ -1040,16 +1071,14 @@ static ssize_t charge_limit_store(struct device *dev,
 {
 	struct t2smc_device *t2 = dev_get_drvdata(dev);
 	u8 val;
+	int ret;
 
 	if (kstrtou8(buf, 10, &val) < 0)
 		return -EINVAL;
-	if (val > 100)
-		return -EINVAL;
 
-	if (t2smc_write_key(t2, T2SMC_CHARGE_LIMIT, &val, 1))
-		return -ENODEV;
-	if (t2smc_write_charge_limit_method(t2, val))
-		return -ENODEV;
+	ret = t2smc_set_charge_limit(t2, val);
+	if (ret)
+		return ret;
 	return count;
 }
 
@@ -1064,6 +1093,105 @@ static struct attribute *t2smc_bclm_attrs[] = {
 static const struct attribute_group t2smc_bclm_group = {
 	.attrs = t2smc_bclm_attrs,
 };
+
+static int t2smc_psy_ext_get(struct power_supply *psy,
+			     const struct power_supply_ext *ext,
+			     void *data, enum power_supply_property psp,
+			     union power_supply_propval *val)
+{
+	struct t2smc_device *t2 = data;
+	u8 limit;
+	int ret;
+
+	if (psp != POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD)
+		return -EINVAL;
+
+	ret = t2smc_get_charge_limit(t2, &limit);
+	if (ret)
+		return ret;
+
+	val->intval = limit;
+	return 0;
+}
+
+static int t2smc_psy_ext_set(struct power_supply *psy,
+			     const struct power_supply_ext *ext,
+			     void *data, enum power_supply_property psp,
+			     const union power_supply_propval *val)
+{
+	struct t2smc_device *t2 = data;
+
+	if (psp != POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD)
+		return -EINVAL;
+	if (val->intval < 0 || val->intval > 100)
+		return -EINVAL;
+
+	return t2smc_set_charge_limit(t2, val->intval);
+}
+
+static int t2smc_psy_ext_is_writeable(struct power_supply *psy,
+				      const struct power_supply_ext *ext,
+				      void *data, enum power_supply_property psp)
+{
+	return psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD;
+}
+
+static const enum power_supply_property t2smc_psy_ext_props[] = {
+	POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD,
+};
+
+static const struct power_supply_ext t2smc_psy_ext = {
+	.name                  = "t2smc-charge-control",
+	.properties            = t2smc_psy_ext_props,
+	.num_properties        = ARRAY_SIZE(t2smc_psy_ext_props),
+	.get_property          = t2smc_psy_ext_get,
+	.set_property          = t2smc_psy_ext_set,
+	.property_is_writeable = t2smc_psy_ext_is_writeable,
+};
+
+static void t2smc_attach_battery(struct t2smc_device *t2)
+{
+	struct power_supply *psy;
+	int ret;
+
+	mutex_lock(&t2->battery_lock);
+	if (t2->battery)
+		goto out;
+
+	psy = power_supply_get_by_name("BAT0");
+	if (!psy)
+		goto out;
+
+	ret = power_supply_register_extension(psy, &t2smc_psy_ext, t2->dev, t2);
+	if (ret) {
+		dev_warn(t2->dev, "charge control extension failed: %d\n", ret);
+		power_supply_put(psy);
+		goto out;
+	}
+
+	t2->battery = psy;
+	dev_info(t2->dev, "charge control attached to BAT0\n");
+out:
+	mutex_unlock(&t2->battery_lock);
+}
+
+/* unregister outside battery_lock: the setter runs under the psy extensions_sem */
+static void t2smc_detach_battery(void *data)
+{
+	struct t2smc_device *t2 = data;
+	struct power_supply *psy;
+
+	mutex_lock(&t2->battery_lock);
+	psy = t2->battery;
+	t2->battery = NULL;
+	mutex_unlock(&t2->battery_lock);
+
+	if (!psy)
+		return;
+
+	power_supply_unregister_extension(psy, &t2smc_psy_ext);
+	power_supply_put(psy);
+}
 
 enum t2smc_power_attr {
 	T2SMC_POWER_EVENT_COUNT,
@@ -1220,6 +1348,8 @@ static void t2smc_power_event_work(struct work_struct *work)
 	WRITE_ONCE(t2->power_status, status);
 	WRITE_ONCE(t2->power_status_valid, true);
 
+	t2smc_attach_battery(t2);
+
 	WRITE_ONCE(t2->power_last_event_ns, ktime_get_boottime_ns());
 	atomic64_inc(&t2->power_event_count);
 	if (t2->hwmon_dev)
@@ -1309,7 +1439,7 @@ static const struct rtc_class_ops t2smc_rtc_ops = {
 
 static int t2smc_register_rtc(struct t2smc_device *t2)
 {
-	struct device *dev = &t2->adev->dev;
+	struct device *dev = t2->dev;
 	bool has_counter, has_offset;
 	int ret;
 
@@ -1348,7 +1478,7 @@ static int t2smc_register_rtc(struct t2smc_device *t2)
 /* Register hwmon device with fan, temp channels and BCLM extra group */
 static int t2smc_register_hwmon(struct t2smc_device *t2)
 {
-	struct device *dev = &t2->adev->dev;
+	struct device *dev = t2->dev;
 	struct device *hwmon_dev;
 	struct hwmon_channel_info *fan_info;
 	struct hwmon_chip_info *chip_info;
@@ -1438,6 +1568,7 @@ static void t2smc_devm_cleanup(void *data)
 	if (t2->iomem)
 		iounmap(t2->iomem);
 	mutex_destroy(&t2->mutex);
+	mutex_destroy(&t2->battery_lock);
 	kfree(t2->cache);
 	kfree(t2->temp_keys);
 	kfree(t2->power_keys);
@@ -1454,30 +1585,35 @@ static void t2smc_unregister_power_notifier(void *data)
 	cancel_work_sync(&t2->power_event_work);
 }
 
-/* -- ACPI driver callbacks -- */
-static int t2smc_add(struct acpi_device *adev)
+/* -- Platform driver callbacks -- */
+static int t2smc_probe(struct platform_device *pdev)
 {
+	struct acpi_device *adev = ACPI_COMPANION(&pdev->dev);
 	struct t2smc_device *t2;
 	int ret;
 
-	t2 = devm_kzalloc(&adev->dev, sizeof(*t2), GFP_KERNEL);
+	if (!adev)
+		return -ENODEV;
+
+	t2 = devm_kzalloc(&pdev->dev, sizeof(*t2), GFP_KERNEL);
 	if (!t2)
 		return -ENOMEM;
 
 	t2->adev = adev;
-	t2->dev = &adev->dev;
+	t2->dev = &pdev->dev;
 	mutex_init(&t2->mutex);
+	mutex_init(&t2->battery_lock);
 	INIT_WORK(&t2->power_event_work, t2smc_power_event_work);
 	atomic64_set(&t2->power_event_count, 0);
 	t2->power_supply_nb.notifier_call = t2smc_power_supply_event;
-	dev_set_drvdata(&adev->dev, t2);
+	platform_set_drvdata(pdev, t2);
 
 	/*
 	 * Register cleanup action before anything that can fail.
 	 * devres runs in reverse order, so this runs AFTER hwmon devres,
 	 * ensuring hwmon callbacks never see freed t2.
 	 */
-	ret = devm_add_action_or_reset(&adev->dev, t2smc_devm_cleanup, t2);
+	ret = devm_add_action_or_reset(&pdev->dev, t2smc_devm_cleanup, t2);
 	if (ret)
 		return ret;
 
@@ -1529,6 +1665,11 @@ static int t2smc_add(struct acpi_device *adev)
 	if (ret)
 		return ret;
 
+	ret = devm_add_action_or_reset(&pdev->dev, t2smc_detach_battery, t2);
+	if (ret)
+		return ret;
+	t2smc_attach_battery(t2);
+
 	ret = t2smc_register_rtc(t2);
 	if (ret)
 		return ret;
@@ -1541,7 +1682,7 @@ static int t2smc_add(struct acpi_device *adev)
 	if (ret)
 		return ret;
 	t2->power_notifier_registered = true;
-	ret = devm_add_action_or_reset(&adev->dev,
+	ret = devm_add_action_or_reset(&pdev->dev,
 				       t2smc_unregister_power_notifier, t2);
 	if (ret)
 		return ret;
@@ -1551,11 +1692,6 @@ static int t2smc_add(struct acpi_device *adev)
 	return 0;
 }
 
-static void t2smc_remove(struct acpi_device *adev)
-{
-	/* All resources (iomem, cache, mutex, hwmon, rtc) are devm-managed */
-}
-
 static const struct acpi_device_id t2smc_ids[] = {
 	{ "APP0001", 0 },
 	{ "smc-huronriver", 0 },
@@ -1563,18 +1699,17 @@ static const struct acpi_device_id t2smc_ids[] = {
 };
 MODULE_DEVICE_TABLE(acpi, t2smc_ids);
 
-static struct acpi_driver t2smc_driver = {
-	.name  = "t2smc",
-	.ids   = t2smc_ids,
-	.ops   = {
-		.add    = t2smc_add,
-		.remove = t2smc_remove,
+static struct platform_driver t2smc_driver = {
+	.probe = t2smc_probe,
+	.driver = {
+		.name = "t2smc",
+		.acpi_match_table = t2smc_ids,
 	},
 };
 
-module_acpi_driver(t2smc_driver);
+module_platform_driver(t2smc_driver);
 
-MODULE_AUTHOR("André Eikmeyer <andre.eikmeyer@gmail.com>");
+MODULE_AUTHOR("André Eikmeyer <andre.eikmeyer@kait2en.org");
 MODULE_DESCRIPTION("T2 Mac SMC driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(T2SMC_VERSION);

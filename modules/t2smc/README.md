@@ -146,8 +146,12 @@ The attributes `fanN_min` and `fanN_max` are limits reported by the SMC.
 
 ### Battery charge limit
 
-We do offer a GUI program to change the battery charge limit and inspect sensor data:
-(https://github.com/deqrocks/t2-smc-control). 
+`t2smc` also attaches the limit to `BAT0` as the standard
+`charge_control_end_threshold` property, so any desktop environment that
+speaks that interface can set it through its own power settings.
+
+We do offer a GUI program to inspect sensor data and the battery charge limit:
+(https://github.com/deqrocks/t2-smc-control).
 Anyways here is how to set battery charge limit manually:
 
 ```sh
@@ -156,6 +160,7 @@ cat "$HWMON/battery_charge_limit"
 
 # Set charge limit to 80 percent
 echo 80 | sudo tee "$HWMON/battery_charge_limit"
+echo 80 | sudo tee /sys/class/power_supply/BAT0/charge_control_end_threshold
 ```
 
 Valid range is 0-100. Persistence across reboot, shutdown, or SMC reset is not
@@ -180,8 +185,8 @@ Macs include:
 | TGDD   | GPU die (digital)       |
 | TGDF   | GPU die (filtered)      |
 | TGVP   | GPU voltage regulator   |
-| TC0E   | CPU 1 die 1             |
-| TC0F   | CPU 1 die 2             |
+| TC0E   | CPU 1 Diode Virtual     |
+| TC0F   | CPU 1 Diode Filtered    |
 | TC0P   | CPU proximity           |
 | TB0T   | Battery temperature     |
 
