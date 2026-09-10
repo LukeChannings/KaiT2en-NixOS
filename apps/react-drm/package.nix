@@ -32,7 +32,7 @@ buildNpmPackage {
   # stack; npmDepsHash pins the fetched npm closure. Refresh it with
   #   prefetch-npm-deps apps/react-drm/package-lock.json
   # (or set to lib.fakeHash and copy the value Nix prints on first build).
-  npmDepsHash = "sha256-nCPPZ1GxmppDZ091V4usr5tIrc/wo50XiK++XZPcShM=";
+  npmDepsHash = "sha256-VYYWM0VsHEb5OYiUE6CI7dvKLkgJVj2eDmAbUkhiuYI=";
 
   nativeBuildInputs = [
     nodejs
@@ -93,10 +93,14 @@ buildNpmPackage {
     mkdir -p "$appdir"
     cp -r . "$appdir/"
 
-    # The systemd user unit and udev rules shipped under system/.
+    # The systemd user unit and udev rules shipped under system/. Upstream's
+    # "unified code base" migration (416e4a2) split the single
+    # 99-react-drm.rules into per-distro variants; this is the KaiT2en fork, so
+    # install the kait2en variant as the canonical 99-react-drm.rules the NixOS
+    # module consumes.
     install -Dm644 system/react-drm.service \
       "$out/share/react-drm/system/react-drm.service"
-    install -Dm644 system/99-react-drm.rules \
+    install -Dm644 system/99-react-drm-kait2en.rules \
       "$out/share/react-drm/system/99-react-drm.rules"
     install -Dm755 system/react-drm-tb-detach \
       "$out/share/react-drm/system/react-drm-tb-detach"
