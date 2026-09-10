@@ -61,6 +61,10 @@
           t2-apple-audio-dsp = ./nix/modules/t2-apple-audio-dsp;
           kait2en-suspend = ./nix/modules/kait2en-suspend;
           t2-ncm = ./nix/modules/t2-ncm;
+          t2-power-explorer = ./nix/modules/t2-power-explorer;
+          t2-power-tune = ./nix/modules/t2-power-tune;
+          t2-cpu-control = ./nix/modules/t2-cpu-control;
+          t2-gpu-control = ./nix/modules/t2-gpu-control;
         };
 
         # Per-device profiles: each imports the aggregate modules and switches

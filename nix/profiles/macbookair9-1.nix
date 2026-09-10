@@ -18,13 +18,16 @@
 #     the Broadcom blobs in by hand instead.
 #   * The SMC charge-limit slider needs your user in the video group; add it
 #     with services.t2-smc-control.users = [ "<you>" ];
+{ pkgs, ... }:
+
 {
   imports = [ ../modules ];
 
   hardware.kait2en = {
     enable = true;
     firmware.enable = true;
-    # Integrated Ice Lake graphics only — no AMD dGPU, so leave amdgpuAspm off.
+    # Integrated Ice Lake graphics only — no AMD dGPU, so leave amdgpuAspm off
+    # and gpuControl unset (neither GPU app applies to this model).
     # Ice Lake integrated Thunderbolt (8086:8a0d/8a17): upstream removes the
     # acpi_osi overrides here (they break hotplug on this Thunderbolt
     # generation).
@@ -35,6 +38,12 @@
   services.t2-ncm.enable = true;
   services.t2-fan-control.enable = true;
   services.t2-smc-control.enable = true;
+  services.t2-power-explorer.enable = true;
+  services.t2-power-tune.enable = true;
+  services.t2-cpu-control.enable = true;
+
+  # t2-journal has no system integration — just ship the CLI.
+  environment.systemPackages = [ (pkgs.callPackage ../../apps/t2-journal/package.nix { }) ];
 
   services.t2-apple-audio-dsp = {
     enable = true;

@@ -16,6 +16,8 @@
 #     in the video/input groups; add it with
 #     services.react-drm.users = [ "<you>" ];
 #     services.t2-smc-control.users = [ "<you>" ];
+{ pkgs, ... }:
+
 {
   imports = [ ../modules ];
 
@@ -28,6 +30,8 @@
     # Titan Ridge Thunderbolt (8086:15e8/15eb): upstream removes the acpi_osi
     # overrides here (they break hotplug on this Thunderbolt generation).
     acpiOsiOverride = false;
+    # Radeon Pro dGPU — this model uses t2-dgpu-control.
+    gpuControl.mode = "dgpu";
   };
 
   services.kait2en-suspend.enable = true;
@@ -35,6 +39,12 @@
   services.react-drm.enable = true;
   services.t2-fan-control.enable = true;
   services.t2-smc-control.enable = true;
+  services.t2-power-explorer.enable = true;
+  services.t2-power-tune.enable = true;
+  services.t2-cpu-control.enable = true;
+
+  # t2-journal has no system integration — just ship the CLI.
+  environment.systemPackages = [ (pkgs.callPackage ../../apps/t2-journal/package.nix { }) ];
 
   services.t2-apple-audio-dsp = {
     enable = true;
