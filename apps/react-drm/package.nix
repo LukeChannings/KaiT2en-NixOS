@@ -75,12 +75,16 @@ buildNpmPackage {
 
   # The root `build` only compiles the parent package (src/ -> dist/src/). The
   # systemd user service runs linux-touchbar-control-center/dist/index.js, which
-  # is produced by the *workspace's* own `tsc -p tsconfig.json` — the root build
-  # never runs it, so without this step that file is missing and the unit
-  # crash-loops with MODULE_NOT_FOUND. Compile the workspace here against its
-  # tsconfig (typescript is an installed devDependency in node_modules/.bin).
+  # is produced by the *workspace's* own `build` script — the root build never
+  # runs it, so without this step that file is missing and the unit crash-loops
+  # with MODULE_NOT_FOUND. Reproduce the workspace build here: tsc emits the JS,
+  # tsc-alias rewrites the `@/*` path aliases to relative requires (tsc leaves
+  # them intact, so skipping it crash-loops on `Cannot find module '@/...'`),
+  # and assets/ is copied alongside the compiled output the runtime loads.
   postBuild = ''
     node_modules/.bin/tsc -p linux-touchbar-control-center/tsconfig.json
+    node_modules/.bin/tsc-alias -p linux-touchbar-control-center/tsconfig.json
+    cp -r linux-touchbar-control-center/assets linux-touchbar-control-center/dist/
   '';
 
   # buildNpmPackage's default install expects a `bin`/`files`; this is a
