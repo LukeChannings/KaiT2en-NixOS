@@ -7,41 +7,6 @@ require_repo_root
 require_fedora
 require_command chmod grubby grep install sed
 
-has_intel_pci_device() {
-	local device path wanted
-
-	for path in /sys/bus/pci/devices/*; do
-		[[ -r "$path/vendor" && -r "$path/device" ]] || continue
-		[[ $(<"$path/vendor") == 0x8086 ]] || continue
-		device="$(<"$path/device")"
-		for wanted in "$@"; do
-			[[ "$device" == "$wanted" ]] && return 0
-		done
-	done
-
-	return 1
-}
-
-has_amdgpu_macbook_model() {
-	local model
-
-	[[ -r /sys/class/dmi/id/product_name ]] || {
-		info "DMI product name not found; skipping AMDGPU ASPM argument"
-		return 1
-	}
-
-	read -r model </sys/class/dmi/id/product_name
-	case "$model" in
-		MacBookPro15,1|MacBookPro15,3|MacBookPro16,1|MacBookPro16,4)
-			return 0
-			;;
-		*)
-			info "Model $model has no supported AMD dGPU ASPM override"
-			return 1
-			;;
-	esac
-}
-
 repair_empty_grub_cmdline() {
 	local arg cmdline escaped
 	local -a args kept_args=()
@@ -80,6 +45,7 @@ repair_empty_grub_cmdline() {
 REMOVE_ARGS=(
 	"'acpi_osi=Windows 2012'"
 	"acpi_osi='Windows 2012'"
+	acpi_osi
 	intel_iommu
 	iommu
 	pm_async
@@ -99,17 +65,45 @@ REMOVE_ARGS=(
 )
 
 ADD_ARGS=(
+	"amdgpu.aspm=1"
 	"i915.enable_guc=2"
 	"intel_iommu=on"
 	"iommu=pt"
-	"pm_async=off"
 	"brcmfmac.p2pon=0"
 	"pcie_aspm=force"
 	"pcie_aspm.policy=powersave"
 	"pcie_ports=compat"
-	"pci=noaer"
 	"mem_sleep_default=deep"
 )
+
+# The Ethernet controllers in iMacs and the iMac Pro do not survive forced
+# ASPM, so leave ASPM to the firmware there.
+model=""
+[[ -r /sys/class/dmi/id/product_name ]] &&
+	read -r model </sys/class/dmi/id/product_name
+if [[ "$model" == iMac* ]]; then
+	kept_args=()
+	for arg in "${ADD_ARGS[@]}"; do
+		[[ "$arg" == pcie_aspm=force ]] || kept_args+=("$arg")
+	done
+	ADD_ARGS=("${kept_args[@]}")
+	info "not forcing PCIe ASPM on $model"
+fi
+
+# The Navi 14 of the MacBookPro16,1 drops off the PCIe bus under load on
+# several machines. Leave ASPM on its link to the firmware and to amdgpu's own
+# decision while this is investigated.
+if [[ "$model" == MacBookPro16,1 ]]; then
+	kept_args=()
+	for arg in "${ADD_ARGS[@]}"; do
+		case "$arg" in
+			amdgpu.aspm=1 | pcie_aspm=force | pcie_aspm.policy=powersave) ;;
+			*) kept_args+=("$arg") ;;
+		esac
+	done
+	ADD_ARGS=("${kept_args[@]}")
+	info "not forcing PCIe or AMDGPU ASPM on $model"
+fi
 
 INITCALL_BLACKLIST="initcall_blacklist=cmos_init,magicmouse_driver_init"
 BLACKLIST_MODULES=(
@@ -124,26 +118,12 @@ BLACKLIST_MODULES=(
 	apple_bce
 	apple_mfi_fastcharge
 	apple_gmux
+	sbs
 )
 MODULE_BLACKLIST="module_blacklist=$(IFS=,; printf '%s' "${BLACKLIST_MODULES[*]}")"
 SILENT_BLACKLIST_CONF="/etc/modprobe.d/kait2en-silent-blacklist.conf"
 
 ADD_ARGS+=("$INITCALL_BLACKLIST" "$MODULE_BLACKLIST")
-
-if has_amdgpu_macbook_model; then
-	info "supported AMD dGPU MacBook Pro detected; enabling AMDGPU ASPM"
-	ADD_ARGS+=("amdgpu.aspm=1")
-fi
-
-if has_intel_pci_device 0x15e8 0x15eb; then
-	info "Titan Ridge detected; removing obsolete ACPI OSI overrides"
-	REMOVE_ARGS+=(acpi_osi)
-elif has_intel_pci_device 0x8a0d 0x8a17; then
-	info "Ice Lake Thunderbolt detected; removing obsolete ACPI OSI overrides"
-	REMOVE_ARGS+=(acpi_osi)
-else
-	warn "unknown Thunderbolt generation; leaving ACPI OSI arguments unchanged"
-fi
 
 KERNEL_ARGS="${ADD_ARGS[*]}"
 OLD_KERNEL_ARGS="${REMOVE_ARGS[*]}"

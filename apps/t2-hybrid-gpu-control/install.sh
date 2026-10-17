@@ -16,10 +16,13 @@ is_supported_model() {
 		return 1
 	}
 	read -r model </sys/class/dmi/id/product_name
-	if [[ "$model" != MacBookPro15,1 ]]; then
-		info "GPU runtime PM is not supported on $model, skipping t2-hybrid-gpu-control"
-		return 1
-	fi
+	case "$model" in
+		MacBookPro15,1|MacBookPro16,1|MacBookPro16,4) ;;
+		*)
+			info "GPU runtime PM is not supported on $model, skipping t2-hybrid-gpu-control"
+			return 1
+			;;
+	esac
 
 	for dev in /sys/bus/pci/devices/*; do
 		[[ -r "$dev/vendor" && -r "$dev/class" ]] || continue
@@ -50,5 +53,6 @@ target_user="${SUDO_USER:-}"
 info "building and installing t2-hybrid-gpu-control"
 sudo -H -u "$target_user" make -C "$APP_DIR" build
 make -C "$APP_DIR" install
+clean_cargo_build "$APP_DIR" "$target_user"
 
 info "t2-hybrid-gpu-control installed"

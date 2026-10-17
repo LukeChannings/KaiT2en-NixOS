@@ -59,6 +59,10 @@ class FixError(RuntimeError):
     """Expected, user-facing failure."""
 
 
+class FixSkip(FixError):
+    """Benign condition: an existing non-KAIT2EN override is left untouched."""
+
+
 @dataclass(frozen=True)
 class Detection:
     cpussdt_problem: bool
@@ -1441,9 +1445,9 @@ def verify_managed_or_absent(target: Path) -> None:
             "Resolve this stale state manually before reinstalling."
         )
     if not marker_exists:
-        raise FixError(
+        raise FixSkip(
             f"Existing ACPI override is not owned by KAIT2EN: {target}. "
-            "It was left unchanged; move or remove it manually before reinstalling."
+            "It was left unchanged; move or remove it manually to let KAIT2EN manage it."
         )
     if target.is_symlink() or marker.is_symlink() or not target.is_file() or not marker.is_file():
         raise FixError(
@@ -1547,8 +1551,22 @@ def check_dsdt_duplicates(target: Path) -> None:
 
 # ---------------------------------------------------------------------------
 
+def overrides_loaded_this_boot(product_name: str) -> set[Path]:
+    """Return the managed overrides that the running kernel took from the initramfs.
+
+    A fix that is active hides the error it fixes, so a clean log alone does
+    not mean that an override is obsolete.
+    """
+    log = kernel_log_grep("ACPI table found in initrd")
+    names = ("dsdt.aml", cpussdt_deploy_name(product_name))
+    return {DEPLOY_DIR / name for name in names if f"kernel/firmware/acpi/{name}]" in log}
+
+
 def deploy_tables(
-    tables: Sequence[BuiltTable], timestamp: str, product_name: str
+    tables: Sequence[BuiltTable],
+    timestamp: str,
+    product_name: str,
+    keep: set[Path],
 ) -> Path:
     cpussdt = next((table for table in tables if table.kind == "CpuSSDT"), None)
     if cpussdt:
@@ -1564,7 +1582,7 @@ def deploy_tables(
         DEPLOY_DIR / "dsdt.aml",
         DEPLOY_DIR / cpussdt_deploy_name(product_name),
     }
-    obsolete_targets = sorted(managed_targets - desired_targets)
+    obsolete_targets = sorted(managed_targets - desired_targets - keep)
     affected_targets = desired_targets | set(obsolete_targets)
     for target in sorted(affected_targets):
         verify_managed_or_absent(target)
@@ -1647,7 +1665,13 @@ def main() -> int:
         if detection.dsdt_problem:
             tables.append(build_dsdt(workdir))
 
-    deploy_tables(tables, timestamp, product_name)
+    active = overrides_loaded_this_boot(product_name)
+    if not tables and active:
+        names = ", ".join(sorted(path.name for path in active))
+        info(f"ACPI firmware fixes are active in this boot, keeping them: {names}")
+        return 0
+
+    deploy_tables(tables, timestamp, product_name, active)
     if not tables:
         info("ACPI firmware fixes are not needed; removed obsolete KaiT2en overrides")
     else:
@@ -1665,6 +1689,9 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except KeyboardInterrupt:
         raise SystemExit(130)
+    except FixSkip as exc:
+        print(f"[kait2en] ACPI autofix skipped: {exc}")
+        raise SystemExit(0)
     except FixError as exc:
         print_failure(str(exc))
         raise SystemExit(1)

@@ -1,0 +1,393 @@
+# Single source of truth for the "Features & status" page and for the upstream
+# announcements in the #upstream-work Discord channel.
+#
+# Required: id, title, state, upstream, updated
+# Optional: authors, link, help, notes, project, subsystem, version
+#
+# state:    in-progress | planned | available    — what a user gets today
+# upstream: downstream | preparing | submitted | merged | superseded | revoked | rejected | stale
+#
+#
+# `link` makes both the title and the upstream label clickable. It is either an
+# https:// URL or a page below docs/, e.g. post-install/audio-dsp.md. Once
+# something has been submitted upstream, link (the patch or MR) and authors are
+# required. `help` states what help is needed and puts the row into the
+# "Help wanted" filter.
+#
+# `id` is the anchor for the Discord message and must stay stable — renaming one
+# announces the item a second time. Only rows that have been submitted upstream
+# are announced at all.
+
+items:
+
+  - id: brcmfmac-bcm4377-d3-ack
+    title: "Wi-Fi suspend on BCM4377 T2 Macs"
+    state: available
+    upstream: superseded
+    version: v2
+    project: Linux kernel
+    subsystem: Wi-Fi / brcmfmac
+    authors:
+      - deqrocks
+    link: "https://lore.kernel.org/all/20261001085308.1688049-1-dev@deq.rocks/"
+    updated: "2026-10-04"
+    notes: >-
+      The downstream systemd suspend service handles BCM4377 today. Our v2
+      kernel patch was superseded by Sebastian Reichel's accepted generic
+      brcmfmac fix, which ignores a missing D3 ACK when Wake-on-WLAN is not
+      armed and uses the cold-reprobe recovery path on resume:
+      https://lore.kernel.org/linux-wireless/20260915-brcmfmac-bcm43752-suspend-fix-v2-1-1bd84914998b@collabora.com/
+
+  - id: brcmfmac-pm-max-power-management
+    title: "Wi-Fi PM_MAX power management"
+    state: in-progress
+    upstream: revoked
+    version: v3
+    project: Linux kernel
+    subsystem: Wi-Fi / brcmfmac
+    authors:
+      - 4f1sh3r
+    link: "https://lore.kernel.org/linux-wireless/20260810150552.25375-1-alexander@fischermail.me/"
+    updated: "2026-08-15"
+    notes: >-
+      Withdrawn after extended BCM4364 testing found intermittent 50-250 ms
+      latency spikes with PM_MAX. PM_FAST remains the driver default.
+
+  - id: audio-dsp
+    title: "Audio DSP"
+    state: available
+    upstream: downstream
+    project: KAIT2EN Fedora
+    subsystem: t2bce_audio
+    authors:
+      - deqrocks
+    link: post-install/audio-dsp.md
+    updated: "2026-09-15"
+    notes: >-
+      Reverse engineered T2 input/output audio DSP and exposed it to ALSA.
+
+  - id: package-c-states
+    title: "Package C-states"
+    state: available
+    upstream: downstream
+    project: KAIT2EN Fedora
+    subsystem: Power management
+    authors:
+      - deqrocks
+    updated: "2026-08-03"
+    notes: >-
+      Getting the platform into deep package C-states so idle power draw and
+      battery life come closer to macOS.
+
+  - id: apple-t2-panel-self-refresh
+    title: "Panel Self Refresh on Apple T2 displays"
+    state: in-progress
+    upstream: submitted
+    version: v4
+    project: Linux kernel
+    subsystem: DRM / i915
+    authors:
+      - 4f1sh3r
+    link: "https://lore.kernel.org/all/20261016140707.1900947-1-alexander.fischer@kait2en.org/"
+    updated: "2026-10-16"
+    notes: >-
+      Enables PSR on Apple T2 eDP panels using the sink-specific DPCD setup
+      and capture sequence, reducing idle display power and enabling deeper
+      package C-states up to PC10.
+
+  - id: keyboard-backlight-reenumeration
+    title: "Keyboard backlight after re-enumeration"
+    state: available
+    upstream: merged
+    project: upower
+    authors:
+      - deqrocks
+    link: "https://gitlab.freedesktop.org/upower/upower/-/merge_requests/335"
+    updated: "2026-07-29"
+    notes: >-
+      The backlight did not come back on after the keyboard re-enumerated.
+      Was merged and is expected to ship with kernel 7.4.
+
+  - id: thunderbolt-device-links
+    title: "Thunderbolt device links"
+    state: available
+    upstream: merged
+    version: v9
+    project: Linux kernel
+    subsystem: Thunderbolt
+    authors:
+      - byte
+      - deqrocks
+    link: "https://lore.kernel.org/all/20260817101329.1517-1-atharvatiwarilinuxdev@gmail.com/"
+    updated: "2026-08-17"
+    notes: >-
+      The three-patch series moves Apple device-link discovery into the 
+      Thunderbolt PCI code and adds Titan Ridge and Ice Lake support separately.
+      Was merged and is expected to ship with kernel 7.4.
+
+  - id: apple-t2-early-cpu-offlining
+    title: "Fast CPU restore after suspend"
+    state: available
+    upstream: submitted
+    version: v1
+    project: Linux kernel
+    subsystem: ACPI / CPU hotplug
+    authors:
+      - deqrocks
+    link: "https://lore.kernel.org/all/20260812120326.155226-1-dev@deq.rocks/"
+    updated: "2026-08-12"
+    notes: >-
+      Moves secondary CPU hotplug outside the generic CPU PM notifier window
+      on Apple T2 systems, avoiding multi-second delays per CPU during resume.
+
+  - id: touchbar-runtime-pm-deadlock
+    title: "Touch Bar suspend and resume without PM deadlock"
+    state: available
+    upstream: merged
+    version: v1
+    project: Linux kernel
+    subsystem: HID / Touch Bar
+    authors:
+      - deqrocks
+    link: "https://lore.kernel.org/linux-input/20260810140352.35866-1-dev@deq.rocks/"
+    updated: "2026-08-10"
+    notes: >-
+      Avoids nested runtime PM references in the HID callbacks that could stall
+      Touch Bar suspend and resume.
+
+  - id: display-brightness-after-reboot
+    title: "Display brightness restored after reboot"
+    state: available
+    upstream: merged
+    project: systemd
+    subsystem: udev
+    authors:
+      - deqrocks
+    link: "https://github.com/systemd/systemd/pull/43255"
+    updated: "2026-08-02"
+    notes: >-
+      The backlight had no stable path ID, so the brightness setting was lost on
+      every reboot.
+
+  - id: thunderbolt-controller-power-15-1
+    title: "Thunderbolt controller stays powered (15,1)"
+    state: available
+    upstream: revoked
+    version: v1
+    project: Linux kernel
+    subsystem: USB / xHCI
+    authors:
+      - deqrocks
+    link: "https://lore.kernel.org/linux-usb/20260730210655.15514-1-dev@deq.rocks/"
+    updated: "2026-08-15"
+    notes: >-
+      The original xHCI patch was withdrawn after native PCIe port services
+      restored USB 3 hotplug from runtime D3. Further testing found a separate
+      system-resume regression: allowing the Titan Ridge xHCI controllers and
+      their ports into D3 delays EC interrupt unblock by about 20 seconds.
+      Kait2en therefore retains the D3 restriction downstream while the proper
+      upstream fix is investigated.
+
+  - id: volume-slider-crackling
+    title: "Volume slider without DSP crackling"
+    state: available
+    upstream: merged
+    project: GNOME Shell
+    subsystem: Quick Settings
+    authors:
+      - deqrocks
+    link: "https://gitlab.gnome.org/GNOME/gnome-shell/-/merge_requests/4302"
+    updated: "2026-07-27"
+    notes: >-
+      Dragging the Quick Settings volume slider caused audible crackles on
+      PipeWire DSP sinks.
+
+  - id: fn-double-press-layer-switch
+    title: "Fn double press switches F-keys and media controls"
+    state: available
+    upstream: merged
+    version: v5
+    project: Linux kernel
+    subsystem: HID / Touch Bar
+    authors:
+      - AdityaGarg8
+      - deqrocks
+    link: "https://lore.kernel.org/linux-input/20260722141221.13844-1-dev@deq.rocks/"
+    updated: "2026-07-22"
+
+  - id: ignore-trackpad
+    title: "Trackpad on T2 Macs is incorrectly bound by the hid-apple driver"
+    state: available
+    upstream: merged
+    version: v1
+    project: Linux kernel
+    subsystem: HID / Input
+    authors:
+      - AdityaGarg8
+    link: "https://lore.kernel.org/linux-input/20260903064407.27755-1-aditya.garg@linux.dev/"
+    updated: "2026-09-03"
+    notes: Trackpad and keyboard share the same VID/PID. Use the existing APPLE_IGNORE_MOUSE quirk.
+
+  - id: dgpu-wakeup-15-1
+    title: "dGPU dies up on MacBookPro15,1"
+    state: available
+    upstream: merged
+    version: v1
+    project: Linux kernel
+    subsystem: PCI / amdgpu
+    authors:
+      - FrederickGeek8
+      - deqrocks
+    link: "https://lore.kernel.org/all/20260722125734.6541-1-dev@deq.rocks/"
+    updated: "2026-07-22"
+    notes: The SMU was dead after resume, leaving the discrete GPU unusable.
+
+  - id: keyboard-backlight-brightness
+    title: "Keyboard backlight brightness levels"
+    state: available
+    upstream: merged
+    version: v1
+    project: Linux kernel
+    subsystem: HID / Input
+    authors:
+      - deqrocks
+    link: "https://lore.kernel.org/linux-input/20260718151241.7496-1-dev@deq.rocks/"
+    updated: "2026-07-18"
+    notes: The backlight reports were parsed with the wrong endianness.
+
+  - id: keyboard-backlight-after-resume
+    title: "Keyboard backlight after resume"
+    state: available
+    upstream: merged
+    version: v1
+    project: Linux kernel
+    subsystem: HID / Input
+    authors:
+      - deqrocks
+    link: "https://lore.kernel.org/linux-input/20260718121527.15924-1-dev@deq.rocks/"
+    updated: "2026-07-18"
+    notes: >-
+      The butterfly keyboard backlight came back on at 0% after resume, and now
+      uses the same LED naming as the magic keyboards.
+
+  - id: force-click
+    title: "Force Click trackpad controls"
+    state: available
+    upstream: downstream
+    project: KAIT2EN Fedora
+    subsystem: Input / Force Touch
+    authors:
+      - deqrocks
+    updated: "2026-09-21"
+    notes: >-
+      Provides adjustable click and Force Click pressure, Taptic Engine
+      feedback, and configurable actions for the separate Force Click event.
+
+  - id: hybrid-graphics
+    title: "Hybrid graphics and dGPU power management"
+    state: available
+    upstream: submitted
+    version: v1
+    project: KAIT2EN Fedora
+    subsystem: t2gmux / amdgpu
+    authors:
+      - byte
+      - deqrocks
+    link: "https://lore.kernel.org/all/20260812144750.36797-1-dev@deq.rocks/"
+    updated: "2026-08-12"
+    notes: >-
+      Runtime GPU switching is available downstream on MacBookPro15,1. The
+      apple-gmux, amdgpu and ALSA HDA changes were submitted upstream as v3.
+
+  - id: hybrid-graphics-16-x
+    title: "Hybrid graphics and dGPU power management on MacBookPro16,1 and 16,4"
+    state: available
+    upstream: downstream
+    project: KAIT2EN Fedora
+    subsystem: t2gmux / amdgpu
+    authors:
+      - byte
+      - deqrocks
+    link: post-install/configuring-gpus.md
+    updated: "2026-09-29"
+    notes: >-
+      Runtime GPU switching, dGPU power management, and working suspend and
+      resume are available on MacBookPro16,1 and MacBookPro16,4.
+
+  - id: t2-ave-hardware-encode
+    title: "Hardware video encoding (T2 AVE)"
+    state: available
+    upstream: downstream
+    project: KAIT2EN Fedora
+    subsystem: t2bce_ave
+    authors:
+      - deqrocks
+    link: post-install/hardware-video-encoding.md
+    updated: "2026-09-11"
+    notes: >-
+      Exposes the T2 Apple Video Encoder for hardware HEVC encoding.
+      Usable today through the t2-ave HandBrake build https://github.com/deqrocks/HandBrake
+      or ffmpeg.
+
+  - id: touch-id
+    title: "Touch ID login"
+    state: available
+    upstream: downstream
+    project: KAIT2EN Fedora
+    subsystem: t2-touchid / BiometricKit
+    authors:
+      - deqrocks
+    link: post-install/touch-id.md
+    updated: "2026-09-11"
+    notes: >-
+      The finger enrolled under macOS unlocks login and sudo on Linux through
+      stock fprintd, with nothing patched. Aimed at a libfprint driver upstream.
+      Enrollment on Linux is prepared through T2sep, but not implemented.
+
+  - id: t2-touch-bar
+    title: "T2 Touch Bar"
+    state: available
+    upstream: downstream
+    project: KAIT2EN Fedora
+    subsystem: t2bdrm / t2touchbar
+    authors:
+      - deqrocks
+    link: post-install/kait2en-applications.md
+    updated: "2026-10-04"
+    notes: >-
+      Optional Touch Bar daemon that stays dark until touched, with media and
+      F-key rows, multitouch gestures for volume and brightness, the Touch ID
+      prompt and track changes from media players.
+
+  - id: imac-5k
+    title: "5K display on iMac20,1 and iMac20,2"
+    state: available
+    upstream: downstream
+    project: KAIT2EN Fedora
+    subsystem: DRM / amdgpu
+    authors:
+      - byte
+    updated: "2026-10-03"
+    notes: >-
+      Drives the internal 5K panel at full resolution by genlocking the two
+      display streams that feed it. Ships as an amdgpu patch in the KAIT2EN
+      kernel builds.
+
+  - id: smc-power-limits
+    title: "No more prochot throttling under load"
+    state: available
+    upstream: downstream
+    project: KAIT2EN Fedora
+    subsystem: t2smc / t2-zone-power
+    authors:
+      - deqrocks
+    link: post-install/kait2en-applications.md
+    updated: "2026-10-12"
+    notes: >-
+      The SMC shares the heatpipe between CPU, iGPU and dGPU and asks the OS
+      for lower limits in steps, which Linux used to ignore until prochot
+      dropped the CPU to 800 MHz. t2smc now exposes these steps and T2 Zone
+      Power applies them like macOS does, so CPU and GPU settle on steady
+      clocks under load. An amdgpu patch lets the Navi GPUs of Apple Macs
+      lower their power limit to 40 % of TDP, so the SMC can balance the
+      dGPU as well.

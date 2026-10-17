@@ -1,7 +1,11 @@
+mod gauging;
+
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::env;
 use std::fs;
+use std::io::{Read, Seek, SeekFrom};
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
@@ -75,7 +79,7 @@ fn palette_css(dark: bool) -> String {
 fn install_palette() {
     let provider = gtk4::CssProvider::new();
     let style = adw::StyleManager::default();
-    provider.load_from_data(&palette_css(style.is_dark()));
+    provider.load_from_string(&palette_css(style.is_dark()));
     if let Some(display) = gtk4::gdk::Display::default() {
         gtk4::style_context_add_provider_for_display(
             &display,
@@ -84,7 +88,7 @@ fn install_palette() {
         );
     }
     style.connect_dark_notify(move |manager| {
-        provider.load_from_data(&palette_css(manager.is_dark()));
+        provider.load_from_string(&palette_css(manager.is_dark()));
     });
 }
 
@@ -177,6 +181,7 @@ fn sensor_label(key: &str) -> String {
         "TGDD" => "GPU AMD Die digital".into(),
         "TGDF" => "GPU Die analog".into(),
         "TGVP" => "GPU VR".into(),
+        "TF0S" => "Fan 0 synthetic".into(),
         "TH0F" => "SSD Heatsink".into(),
         "TH0X" => "SSD Controller".into(),
         "TH0a" => "SSD NAND".into(),
@@ -265,7 +270,8 @@ fn sync_rtc_from_system(rtc: &Path) -> Result<(), String> {
         .ok_or_else(|| "Cannot derive the RTC device node".to_string())?;
 
     let output = Command::new("pkexec")
-        .args([HWCLOCK_PATH, "--rtc", &device, "--systohc"])
+        // The SMC clock is UTC like on macOS, whatever /etc/adjtime says
+        .args([HWCLOCK_PATH, "--rtc", &device, "--utc", "--systohc"])
         .output()
         .map_err(|err| format!("Cannot start pkexec: {err}"))?;
 
@@ -459,6 +465,47 @@ fn read_charge_limit(hwmon: &Path) -> Option<u8> {
         .ok()
 }
 
+/// One row of the Thermals list. `id` keys the row, `key` is what the key
+/// column shows.
+struct ThermalRow {
+    name: String,
+    key: String,
+    id: String,
+    value: String,
+}
+
+/// SMC thermal levels as t2smc reads them from the SMC I/O window, shown as
+/// raw numbers since their scale is not known.
+fn read_thermal_levels(hwmon: &Path) -> Vec<ThermalRow> {
+    [
+        ("CPU thermal level", "smc_thermal_level_cpu"),
+        ("IO thermal level", "smc_thermal_level_io"),
+        ("GPU thermal level", "smc_thermal_level_gpu"),
+    ]
+    .into_iter()
+    .filter_map(|(name, attribute)| {
+        let level = read_i64(&hwmon.join(attribute))?;
+        Some(ThermalRow {
+            name: name.into(),
+            key: String::new(),
+            id: attribute.into(),
+            value: level.to_string(),
+        })
+    })
+    .collect()
+}
+
+fn read_thermals(hwmon: &Path) -> Vec<ThermalRow> {
+    let mut rows = read_thermal_levels(hwmon);
+    rows.extend(read_sensors(hwmon).into_iter().map(|(name, key, val)| ThermalRow {
+        name,
+        id: key.clone(),
+        key,
+        value: sensor_value_text(val),
+    }));
+    rows
+}
+
 fn read_i64(path: &Path) -> Option<i64> {
     fs::read_to_string(path).ok()?.trim().parse().ok()
 }
@@ -473,7 +520,11 @@ fn scaled_value(value: i64, unit: &str) -> String {
 
 fn power_label(key: &str) -> String {
     match key {
+        // T2 accumulator channels do not carry descriptions in libSMC. Keep
+        // unverified functions explicit and neutral instead of guessing names.
+        "PA8C" => "A8 load-side rail".into(),
         "PAPC" => "WiFi".into(),
+        "PBLR" => "BL rail (12 V)".into(),
         "PCPT" => "CPU package total (PECI)".into(),
         "PCTR" | "PCPL" => "CPU Total".into(),
         "PC0C" => "CPU Core 1".into(),
@@ -501,24 +552,33 @@ fn power_label(key: &str) -> String {
         "PC1R" => "CPU Rail".into(),
         "PC5R" => "CPU S0 Rail".into(),
         "PCSC" => "CPU VCCSA (PCSC)".into(),
+        "PCIC" => "CPU I/O load-side rail".into(),
+        "PCTC" => "CT load-side rail".into(),
         "PD0R" => "DC-In MLB S0 rail".into(),
         "PD5R" => "DC-In MLB S5 rail".into(),
         "PDMR" => "DC-In MLB total".into(),
         "PDTR" => "DC-In total".into(),
+        "PF3C" => "F3 load-side rail".into(),
         "PGTR" => "GPU Total".into(),
         "PG0R" => "GPU 0 rail".into(),
         "PG0C" => "GPU".into(),
         "PG1C" => "External GPU 1.8 V".into(),
         "PG2C" => "External GPU 1.05 V".into(),
         "PG3C" => "External GPU 1.35 V".into(),
+        "PG4C" => "External GPU rail 4".into(),
+        "PH0C" => "SSD 3.3 V load-side rail 0".into(),
         "PH0R" => "Drive 0".into(),
+        "PH1C" => "SSD 3.3 V load-side rail 1".into(),
         "PH1R" => "Drive 1".into(),
         "PHPC" => "Heatpipe".into(),
         "PLDC" => "LCD panel".into(),
         "PM0C" => "Memory average".into(),
         "PM0R" => "Memory Rail".into(),
+        "PMCC" => "MC load-side rail".into(),
         "PN0C" => "MCH".into(),
         "PN1R" => "PCH Rail".into(),
+        "POLR" => "Left Thunderbolt/I/O rail".into(),
+        "PORR" => "Right Thunderbolt/I/O rail".into(),
         "PH02" => "Main 3.3V Rail".into(),
         "PH05" => "Main 5V Rail".into(),
         "Pp0R" => "12V Rail".into(),
@@ -526,6 +586,10 @@ fn power_label(key: &str) -> String {
         "PO0R" => "Misc. Rail".into(),
         "PBLC" | "PB0R" => "Battery Rail".into(),
         "PM1C" => "DDR".into(),
+        "PS1C" => "S1 load-side rail".into(),
+        "PSLC" => "SL rail (3.3 V)".into(),
+        "PULC" => "Left USB-C load-side rail".into(),
+        "PURC" => "Right USB-C load-side rail".into(),
         "PO5R" => "Other 5 V high-side".into(),
         "PP0R" => "PBus".into(),
         "PPBR" => "PBus battery discharge".into(),
@@ -681,7 +745,7 @@ fn read_power_telemetry(hwmon: &Path) -> Vec<(String, String, String)> {
 }
 
 fn print_usage() {
-    println!("Usage:\n  t2-smc-control");
+    println!("Usage:\n  t2-smc-control\n  t2-smc-control --daemon");
 }
 
 fn handle_cli_args() -> Option<Result<(), String>> {
@@ -690,6 +754,7 @@ fn handle_cli_args() -> Option<Result<(), String>> {
             print_usage();
             Some(Ok(()))
         }
+        "--daemon" => Some(find_hwmon().ok_or_else(|| "t2smc hwmon not found".to_owned()).and_then(gauging::run)),
         _ => None,
     }
 }
@@ -705,10 +770,26 @@ fn set_status(label: &gtk4::Label, text: &str, error: bool) {
     }
 }
 
+/// t2-smc-gaugingd lifts the limit for a calibration charge
+fn charge_limit_suspended(hwmon: &Path) -> bool {
+    fs::read_to_string(hwmon.join("battery_charge_limit_suspended")).is_ok_and(|value| value.trim() == "1")
+}
+
+const CHARGE_LIMIT_TOOLTIP: &str = "Set in the desktop environment's power settings";
+const CHARGE_CALIBRATION_TOOLTIP: &str =
+    "Lifted for a full charge so the battery gauge can recalibrate, like macOS does. The limit returns afterwards.";
+
 fn show_charge_limit(label: &gtk4::Label, meter: &gtk4::ProgressBar, hwmon: Option<&Path>) {
-    match hwmon.and_then(read_charge_limit) {
-        Some(limit) => {
-            label.set_text(&format!("{limit}%"));
+    match hwmon.and_then(|h| read_charge_limit(h).map(|limit| (limit, charge_limit_suspended(h)))) {
+        Some((limit, calibrating)) => {
+            let tooltip = if calibrating { CHARGE_CALIBRATION_TOOLTIP } else { CHARGE_LIMIT_TOOLTIP };
+            if calibrating {
+                label.set_text(&format!("{limit}% · calibrating"));
+            } else {
+                label.set_text(&format!("{limit}%"));
+            }
+            label.set_tooltip_text(Some(tooltip));
+            meter.set_tooltip_text(Some(tooltip));
             meter.set_fraction(limit as f64 / 100.0);
         }
         None => {
@@ -841,15 +922,15 @@ fn refresh_value_rows(
 fn refresh_sensor_rows(
     list: &gtk4::ListBox,
     rows: &Rc<RefCell<BTreeMap<String, gtk4::Label>>>,
-    sensors: &[(String, String, Option<i64>)],
+    thermals: &[ThermalRow],
 ) {
     let has_placeholder = rows.borrow().is_empty() && list.first_child().is_some();
 
-    if sensors.is_empty() {
+    if thermals.is_empty() {
         if !has_placeholder {
             rows.borrow_mut().clear();
             clear_listbox(list);
-            append_placeholder_row(list, "No temperature sensors found");
+            append_placeholder_row(list, "No thermal sensors found");
         }
         return;
     }
@@ -857,26 +938,19 @@ fn refresh_sensor_rows(
     let rebuild = {
         let rows = rows.borrow();
         has_placeholder
-            || rows.len() != sensors.len()
-            || sensors.iter().any(|(_, key, _)| !rows.contains_key(key))
+            || rows.len() != thermals.len()
+            || thermals.iter().any(|row| !rows.contains_key(&row.id))
     };
 
     if rebuild {
-        let mut rows = rows.borrow_mut();
-        clear_listbox(list);
-        rows.clear();
-        append_table_header(list, "Sensor", "Temperature");
-        for (name, key, val) in sensors {
-            let value_label = append_table_row(list, name, key, &sensor_value_text(*val));
-            rows.insert(key.clone(), value_label);
-        }
+        rebuild_sensor_rows(list, rows, thermals);
         return;
     }
 
     let rows = rows.borrow();
-    for (_, key, val) in sensors {
-        if let Some(label) = rows.get(key) {
-            label.set_text(&sensor_value_text(*val));
+    for row in thermals {
+        if let Some(label) = rows.get(&row.id) {
+            label.set_text(&row.value);
         }
     }
 }
@@ -884,21 +958,21 @@ fn refresh_sensor_rows(
 fn rebuild_sensor_rows(
     list: &gtk4::ListBox,
     rows: &Rc<RefCell<BTreeMap<String, gtk4::Label>>>,
-    sensors: &[(String, String, Option<i64>)],
+    thermals: &[ThermalRow],
 ) {
     rows.borrow_mut().clear();
     clear_listbox(list);
 
-    if sensors.is_empty() {
-        append_placeholder_row(list, "No temperature sensors found");
+    if thermals.is_empty() {
+        append_placeholder_row(list, "No thermal sensors found");
         return;
     }
 
     let mut rows = rows.borrow_mut();
-    append_table_header(list, "Sensor", "Temperature");
-    for (name, key, val) in sensors {
-        let value_label = append_table_row(list, name, key, &sensor_value_text(*val));
-        rows.insert(key.clone(), value_label);
+    append_table_header(list, "Sensor", "Value");
+    for row in thermals {
+        let value_label = append_table_row(list, &row.name, &row.key, &row.value);
+        rows.insert(row.id.clone(), value_label);
     }
 }
 
@@ -959,7 +1033,7 @@ fn main() {
         charge_meter.set_hexpand(true);
         charge_meter.set_valign(gtk4::Align::Center);
         charge_meter.add_css_class("overview-meter");
-        charge_meter.set_tooltip_text(Some("Set in the desktop environment's power settings"));
+        charge_meter.set_tooltip_text(Some(CHARGE_LIMIT_TOOLTIP));
 
         // Battery state and remaining-time estimate
         let battery_title = gtk4::Label::new(Some("Battery"));
@@ -1010,7 +1084,7 @@ fn main() {
         power_panel.append(&power_scroll);
 
         // Sensor list
-        let sensors_title = gtk4::Label::new(Some("Temperatures"));
+        let sensors_title = gtk4::Label::new(Some("Thermals"));
         sensors_title.set_halign(gtk4::Align::Start);
         sensors_title.set_xalign(0.0);
         sensors_title.add_css_class("heading");
@@ -1131,7 +1205,72 @@ fn main() {
             button.set_sensitive(true);
         });
 
-        // Poll
+        let refresh_battery: Rc<dyn Fn(&Path)> = {
+            let progress = battery_progress.clone();
+            let value = battery_value.clone();
+            let time = battery_time.clone();
+            let average = battery_current_average.clone();
+            Rc::new(move |h: &Path| {
+                update_battery_overview(
+                    &progress,
+                    &value,
+                    &time,
+                    &read_battery_overview(h),
+                    &mut average.borrow_mut(),
+                );
+            })
+        };
+
+        // Battery state changes arrive as power events, not only on the next tick
+        let power_watch: Rc<RefCell<Option<(PathBuf, glib::SourceId)>>> = Rc::new(RefCell::new(None));
+        let install_power_watch: Rc<dyn Fn(&Path)> = {
+            let power_watch = power_watch.clone();
+            let refresh_battery = refresh_battery.clone();
+            let window = window.downgrade();
+            Rc::new(move |h: &Path| {
+                if power_watch
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|(path, _)| path == h)
+                {
+                    return;
+                }
+                if let Some((_, old)) = power_watch.borrow_mut().take() {
+                    old.remove();
+                }
+                let refresh_battery = refresh_battery.clone();
+                let window = window.clone();
+                let path = h.to_path_buf();
+                let event_path = path.clone();
+                let watch_state = power_watch.clone();
+                let gone_state = power_watch.clone();
+                let source = watch_power_events(
+                    h,
+                    move || {
+                        if window.upgrade().is_some_and(|w| window_on_screen(&w)) {
+                            refresh_battery(&event_path);
+                        }
+                    },
+                    // The source is already finished, so only drop its ID to
+                    // let a later tick watch the new hwmon device
+                    move || {
+                        gone_state.borrow_mut().take();
+                    },
+                );
+                match source {
+                    Some(id) => *watch_state.borrow_mut() = Some((path, id)),
+                    None => *watch_state.borrow_mut() = None,
+                }
+            })
+        };
+        if let Some(ref h) = *hwmon.borrow() {
+            install_power_watch(h);
+        }
+
+        // Poll the displayed values, but only while the window can be seen
+        let window_poll = window.downgrade();
+        let refresh_battery_poll = refresh_battery.clone();
+        let install_power_watch_poll = install_power_watch.clone();
         let hw2 = hwmon.clone();
         let status_poll = status.clone();
         let sensor_rows_poll = sensor_rows.clone();
@@ -1142,27 +1281,24 @@ fn main() {
         let rtc_sync_poll = rtc_sync.clone();
         let charge_value_poll = charge_value.clone();
         let charge_meter_poll = charge_meter.clone();
-        let battery_progress_poll = battery_progress.clone();
-        let battery_value_poll = battery_value.clone();
-        let battery_time_poll = battery_time.clone();
-        let battery_current_average_poll = battery_current_average.clone();
         timeout_add_local(std::time::Duration::from_secs(1), move || {
+            let Some(window) = window_poll.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if !window_on_screen(&window) {
+                return glib::ControlFlow::Continue;
+            }
             let current_hwmon = hw2.borrow().clone();
             show_charge_limit(&charge_value_poll, &charge_meter_poll, current_hwmon.as_deref());
             if let Some(h) = current_hwmon {
                 let power = read_power_telemetry(&h);
                 refresh_value_rows(&power_list_poll, &power_rows_poll, &power);
-                let sensors = read_sensors(&h);
-                refresh_sensor_rows(&sensor_list, &sensor_rows_poll, &sensors);
-                update_battery_overview(
-                    &battery_progress_poll,
-                    &battery_value_poll,
-                    &battery_time_poll,
-                    &read_battery_overview(&h),
-                    &mut battery_current_average_poll.borrow_mut(),
-                );
+                refresh_sensor_rows(&sensor_list, &sensor_rows_poll, &read_thermals(&h));
+                refresh_battery_poll(&h);
+                install_power_watch_poll(&h);
             } else if let Some(h) = find_hwmon() {
                 set_status(&status_poll, "Ready", false);
+                install_power_watch_poll(&h);
                 *hw2.borrow_mut() = Some(h);
             }
 
@@ -1188,6 +1324,54 @@ fn main() {
     });
 
     app.run();
+}
+
+/// True while the window can be seen. Minimized windows and windows the
+/// compositor reports as suspended, for example on another workspace, are not.
+fn window_on_screen(window: &adw::ApplicationWindow) -> bool {
+    if !window.is_visible() {
+        return false;
+    }
+    let Some(surface) = window.surface() else {
+        return false;
+    };
+    let Ok(toplevel) = surface.downcast::<gtk4::gdk::Toplevel>() else {
+        return true;
+    };
+    !toplevel
+        .state()
+        .intersects(gtk4::gdk::ToplevelState::MINIMIZED | gtk4::gdk::ToplevelState::SUSPENDED)
+}
+
+/// Calls `on_event` whenever t2smc counts a power supply event. The driver
+/// calls sysfs_notify on power_event_count, which wakes poll() with POLLPRI.
+/// The source ends and calls `on_gone` when the file goes away, for example on
+/// module unload.
+fn watch_power_events(
+    hwmon: &Path,
+    on_event: impl Fn() + 'static,
+    on_gone: impl Fn() + 'static,
+) -> Option<glib::SourceId> {
+    let mut file = fs::File::open(hwmon.join("power_event_count")).ok()?;
+    let mut count = String::new();
+    // sysfs only reports changes after the attribute has been read once
+    file.read_to_string(&mut count).ok()?;
+    let fd = file.as_raw_fd();
+    Some(glib::unix_fd_add_local(
+        fd,
+        glib::IOCondition::PRI | glib::IOCondition::ERR,
+        move |_, _| {
+            count.clear();
+            let rearmed = file.seek(SeekFrom::Start(0)).is_ok()
+                && file.read_to_string(&mut count).is_ok();
+            if !rearmed {
+                on_gone();
+                return glib::ControlFlow::Break;
+            }
+            on_event();
+            glib::ControlFlow::Continue
+        },
+    ))
 }
 
 fn register_embedded_resources() {
@@ -1283,6 +1467,21 @@ mod tests {
         assert_eq!(power_label("PZ0G"), "Zone 0 average");
         assert_eq!(power_label("PDTR"), "DC-In total");
         assert_eq!(power_label("PSTR"), "System total (1 s delayed)");
+        assert_eq!(power_label("PA8C"), "A8 load-side rail");
+        assert_eq!(power_label("PBLR"), "BL rail (12 V)");
+        assert_eq!(power_label("PCIC"), "CPU I/O load-side rail");
+        assert_eq!(power_label("PCTC"), "CT load-side rail");
+        assert_eq!(power_label("PF3C"), "F3 load-side rail");
+        assert_eq!(power_label("PG4C"), "External GPU rail 4");
+        assert_eq!(power_label("PH0C"), "SSD 3.3 V load-side rail 0");
+        assert_eq!(power_label("PH1C"), "SSD 3.3 V load-side rail 1");
+        assert_eq!(power_label("PMCC"), "MC load-side rail");
+        assert_eq!(power_label("POLR"), "Left Thunderbolt/I/O rail");
+        assert_eq!(power_label("PORR"), "Right Thunderbolt/I/O rail");
+        assert_eq!(power_label("PS1C"), "S1 load-side rail");
+        assert_eq!(power_label("PSLC"), "SL rail (3.3 V)");
+        assert_eq!(power_label("PULC"), "Left USB-C load-side rail");
+        assert_eq!(power_label("PURC"), "Right USB-C load-side rail");
         assert_eq!(power_label("PXYZ"), "unknown (PXYZ)");
     }
 
@@ -1298,7 +1497,7 @@ mod tests {
         assert_eq!(sensor_label("TH1b"), "Drive 1 Raw B");
         assert_eq!(sensor_label("Th1H"), "Right Fin Stack");
         assert_eq!(sensor_label("Th2H"), "Left Fin Stack");
-        assert_eq!(sensor_label("TF0S"), "unknown (TF0S)");
+        assert_eq!(sensor_label("TF0S"), "Fan 0 synthetic");
     }
 
     #[test]

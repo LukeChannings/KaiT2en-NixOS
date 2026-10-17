@@ -5,16 +5,104 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd -P)"
 
+# One error ledger for the complete installation, inherited by child scripts.
+# A failing atomic step stops only that step; run_step continues its siblings.
+INSTALL_REPORT_OWNER=0
+if [[ -z "${KAIT2EN_INSTALL_ERRORS:-}" ]]; then
+	KAIT2EN_INSTALL_ERRORS=$(mktemp /tmp/kait2en-install-errors.XXXXXX)
+	export KAIT2EN_INSTALL_ERRORS
+	INSTALL_REPORT_OWNER=1
+fi
+
+KAIT2EN_INSTALL_HARD_ERRORS="$KAIT2EN_INSTALL_ERRORS.hard"
+
+record_error() {
+	local message="$*"
+	printf '[kait2en] error: %s\n' "$message" >&2
+	if ! printf '%s: %s\n' "${0##*/}" "$message" >>"$KAIT2EN_INSTALL_ERRORS"; then
+		printf '[kait2en] error: cannot append to error report %s\n' "$KAIT2EN_INSTALL_ERRORS" >&2
+	fi
+	printf '%s: %s\n' "${0##*/}" "$message" >>"$KAIT2EN_INSTALL_HARD_ERRORS" || true
+}
+
+installation_summary() {
+	# The installer runs under sudo, so the report was root-owned throughout
+	# the run. Hand it to the invoking user now that nothing else writes to it.
+	if [[ ${EUID:-$(id -u)} -eq 0 && -n "${SUDO_USER:-}" ]]; then
+		chown "$SUDO_USER" "$KAIT2EN_INSTALL_ERRORS" "$KAIT2EN_INSTALL_HARD_ERRORS" 2>/dev/null || true
+	fi
+	if [[ -s "$KAIT2EN_INSTALL_HARD_ERRORS" ]]; then
+		printf '[kait2en] installation completed with errors:\n' >&2
+		cat "$KAIT2EN_INSTALL_ERRORS" >&2
+		printf '[kait2en] saved report: %s\n' "$KAIT2EN_INSTALL_ERRORS" >&2
+		return 1
+	fi
+	if [[ -s "$KAIT2EN_INSTALL_ERRORS" ]]; then
+		printf '[kait2en] installation completed with warnings:\n' >&2
+		cat "$KAIT2EN_INSTALL_ERRORS" >&2
+		printf '[kait2en] saved report: %s\n' "$KAIT2EN_INSTALL_ERRORS" >&2
+		return 0
+	fi
+	info "installation completed without recorded errors"
+}
+
+installer_exit() {
+	local status=$1
+	trap - ERR EXIT
+	if (( INSTALL_REPORT_OWNER )); then
+		installation_summary || status=1
+	fi
+	exit "$status"
+}
+
+trap 'record_error "command failed (status $?) at ${BASH_SOURCE[0]:-$0}:$LINENO: $BASH_COMMAND"' ERR
+trap 'installer_exit "$?"' EXIT
+
+run_step() {
+	local label=$1
+	shift
+	info "$label"
+	# Do not put the subshell in an if/! expression: Bash would then disable
+	# errexit inside shell functions and execute unsafe dependent commands.
+	set +e
+	(
+		set -Eeuo pipefail
+		INSTALL_REPORT_OWNER=0
+		# Parent cleanup (e.g. restoring the DKMS transaction hook) belongs to
+		# the whole installer, not to each individual step.
+		trap 'installer_exit "$?"' EXIT
+		"$@"
+	)
+	STEP_STATUS=$?
+	set -e
+	if (( STEP_STATUS != 0 )); then
+		record_error "$label failed (status $STEP_STATUS); continuing with independent steps"
+	fi
+	return 0
+}
+
 info() {
 	printf '[kait2en] %s\n' "$*"
 }
 
 warn() {
 	printf '[kait2en] warning: %s\n' "$*" >&2
+	printf '%s: warning: %s\n' "${0##*/}" "$*" >>"$KAIT2EN_INSTALL_ERRORS" ||
+		printf '[kait2en] error: cannot write warning report\n' >&2
+}
+
+clean_cargo_build() {
+	local path=$1 target_user=$2
+	if [[ "${KAIT2EN_CARGO_CLEAN:-1}" == 0 ]]; then
+		return 0
+	fi
+	if ! sudo -H -u "$target_user" make -C "$path" clean; then
+		warn "could not remove Cargo build artifacts below $path"
+	fi
 }
 
 fail() {
-	printf '[kait2en] error: %s\n' "$*" >&2
+	record_error "$*"
 	exit 1
 }
 
@@ -33,6 +121,15 @@ require_fedora() {
 	. /etc/os-release
 	[[ ${ID:-} == fedora || " ${ID_LIKE:-} " == *" fedora "* ]] ||
 		fail "this script is Fedora-only"
+}
+
+# Every T2 MacBook Pro has a Touch Bar; the MacBook Air, Mac mini, iMac and
+# Mac Pro models do not.
+has_touch_bar() {
+	local model
+	[[ -r /sys/class/dmi/id/product_name ]] || return 1
+	read -r model </sys/class/dmi/id/product_name
+	[[ "$model" == MacBookPro15,* || "$model" == MacBookPro16,* ]]
 }
 
 require_command() {
@@ -91,4 +188,26 @@ require_min_kernel() {
 	if (( major < min_major || (major == min_major && minor < min_minor) )); then
 		fail "KaiT2en requires Linux kernel ${min_major}.${min_minor} or newer. Update Fedora first, reboot into the updated kernel, then run this installer again. Current kernel: $release"
 	fi
+}
+
+kernel_version_ge() {
+	local release=$1 req_major=$2 req_minor=$3 req_patch=${4:-0}
+	local major minor patch
+
+	if [[ ! "$release" =~ ^([0-9]+)\.([0-9]+)(\.([0-9]+))? ]]; then
+		return 1
+	fi
+
+	major="${BASH_REMATCH[1]}"
+	minor="${BASH_REMATCH[2]}"
+	patch="${BASH_REMATCH[4]:-0}"
+
+	if (( major > req_major )); then
+		return 0
+	elif (( major == req_major && minor > req_minor )); then
+		return 0
+	elif (( major == req_major && minor == req_minor && patch >= req_patch )); then
+		return 0
+	fi
+	return 1
 }

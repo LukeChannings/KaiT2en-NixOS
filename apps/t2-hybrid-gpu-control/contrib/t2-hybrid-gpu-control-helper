@@ -32,7 +32,10 @@ is_supported_macbook() {
 
 	[[ -r /sys/class/dmi/id/product_name ]] || return 1
 	read -r model </sys/class/dmi/id/product_name
-	[[ "$model" == MacBookPro15,1 ]] || return 1
+	case "$model" in
+		MacBookPro15,1|MacBookPro16,1|MacBookPro16,4) ;;
+		*) return 1 ;;
+	esac
 
 	for dev in /sys/bus/pci/devices/*; do
 		[[ -r "$dev/vendor" && -r "$dev/class" ]] || continue
@@ -77,7 +80,7 @@ enable_hybrid_graphics() {
 	local amd
 
 	runtime_pm_supported ||
-		fail "required Apple GMUX runtime-PM kernel support is not available"
+		fail "runtime power management is not enabled for the discrete GPU in vga_switcheroo"
 	amd=$(find_amd_gpu) || fail "no AMDGPU device was found"
 	[[ -w "$amd/power/control" ]] ||
 		fail "runtime power control is unavailable on ${amd##*/}"

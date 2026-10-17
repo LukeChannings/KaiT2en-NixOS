@@ -36,12 +36,14 @@
 #include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_gem_shmem_helper.h>
+#include <drm/drm_modeset_helper.h>
 #include <drm/drm_plane.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(7, 2, 0)
 #define drm_atomic_commit drm_atomic_state
+#define drm_atomic_commit_put drm_atomic_state_put
 #endif
 
 #define APPLETBDRM_PIXEL_FORMAT		cpu_to_le32(0x52474241) /* RGBA, the actual format is BGR888 */
@@ -675,19 +677,6 @@ static void appletbdrm_primary_plane_helper_atomic_disable(struct drm_plane *pla
 	drm_dev_exit(idx);
 }
 
-static void appletbdrm_primary_plane_reset(struct drm_plane *plane)
-{
-	struct appletbdrm_plane_state *appletbdrm_state;
-
-	WARN_ON(plane->state);
-
-	appletbdrm_state = kzalloc_obj(*appletbdrm_state);
-	if (!appletbdrm_state)
-		return;
-
-	__drm_gem_reset_shadow_plane(plane, &appletbdrm_state->base);
-}
-
 static struct drm_plane_state *appletbdrm_primary_plane_duplicate_state(struct drm_plane *plane)
 {
 	struct drm_shadow_plane_state *new_shadow_plane_state;
@@ -727,6 +716,23 @@ static void appletbdrm_primary_plane_destroy_state(struct drm_plane *plane,
 	__drm_gem_destroy_shadow_plane_state(&appletbdrm_state->base);
 
 	kfree(appletbdrm_state);
+}
+
+static void appletbdrm_primary_plane_reset(struct drm_plane *plane)
+{
+	struct appletbdrm_plane_state *appletbdrm_state;
+
+	/* drm_atomic_helper_resume() resets with the old state still attached */
+	if (plane->state) {
+		appletbdrm_primary_plane_destroy_state(plane, plane->state);
+		plane->state = NULL;
+	}
+
+	appletbdrm_state = kzalloc_obj(*appletbdrm_state);
+	if (!appletbdrm_state)
+		return;
+
+	__drm_gem_reset_shadow_plane(plane, &appletbdrm_state->base);
 }
 
 static const struct drm_plane_helper_funcs appletbdrm_primary_plane_helper_funcs = {
@@ -997,6 +1003,47 @@ static void appletbdrm_shutdown(struct usb_interface *intf)
 	drm_atomic_helper_shutdown(&adev->drm);
 }
 
+static int appletbdrm_suspend(struct usb_interface *intf, pm_message_t message)
+{
+	struct appletbdrm_device *adev = usb_get_intfdata(intf);
+
+	return drm_mode_config_helper_suspend(&adev->drm);
+}
+
+static int appletbdrm_resume(struct usb_interface *intf)
+{
+	struct appletbdrm_device *adev = usb_get_intfdata(intf);
+
+	return drm_mode_config_helper_resume(&adev->drm);
+}
+
+static int appletbdrm_reset_resume(struct usb_interface *intf)
+{
+	struct appletbdrm_device *adev = usb_get_intfdata(intf);
+	struct drm_device *drm = &adev->drm;
+	int ret;
+
+	/* After a reset the device expects the probe-time handshake again */
+	ret = appletbdrm_get_information(adev);
+	if (ret) {
+		drm_err(drm, "Failed to get display information\n");
+		goto err_put_state;
+	}
+
+	ret = appletbdrm_signal_readiness(adev);
+	if (ret) {
+		drm_err(drm, "Failed to signal readiness\n");
+		goto err_put_state;
+	}
+
+	return drm_mode_config_helper_resume(drm);
+
+err_put_state:
+	drm_atomic_commit_put(drm->mode_config.suspend_state);
+	drm->mode_config.suspend_state = NULL;
+	return ret;
+}
+
 static const struct usb_device_id appletbdrm_usb_id_table[] = {
 	{ USB_DEVICE_INTERFACE_CLASS(0x05ac, 0x8302, USB_CLASS_AUDIO_VIDEO) },
 	{}
@@ -1008,6 +1055,9 @@ static struct usb_driver appletbdrm_usb_driver = {
 	.probe		= appletbdrm_probe,
 	.disconnect	= appletbdrm_disconnect,
 	.shutdown	= appletbdrm_shutdown,
+	.suspend	= appletbdrm_suspend,
+	.resume		= appletbdrm_resume,
+	.reset_resume	= appletbdrm_reset_resume,
 	.id_table	= appletbdrm_usb_id_table,
 };
 module_usb_driver(appletbdrm_usb_driver);

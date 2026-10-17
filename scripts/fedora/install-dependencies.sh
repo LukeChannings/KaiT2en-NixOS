@@ -30,6 +30,7 @@ packages=(
 	gcc-c++ \
 	make \
 	python3 \
+	python3-gobject \
 	pkgconf-pkg-config \
 	"${development_package[@]}" \
 	kernel-headers \
@@ -42,14 +43,14 @@ packages=(
 	gtk4-devel \
 	libadwaita-devel \
 	glib2-devel \
+	libinput-devel \
+	libplist-devel \
 	systemd-devel \
-	libdrm-devel \
-	cairo-devel \
-	librsvg2-devel \
-	nodejs \
-	npm \
-	brightnessctl \
-	cava
+	fprintd \
+	fprintd-pam \
+	libfprint \
+	checkpolicy \
+	policycoreutils-python-utils
 )
 
 failed_packages=()

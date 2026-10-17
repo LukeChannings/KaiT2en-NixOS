@@ -114,6 +114,7 @@ struct apple_magic_backlight {
 	struct led_classdev cdev;
 	struct hid_report *brightness;
 	struct hid_report *power;
+	bool full_on;
 };
 
 struct apple_sc {
@@ -921,12 +922,36 @@ static void apple_magic_backlight_report_set(struct hid_report *rep, s32 value, 
 	hid_hw_request(rep->device, rep, HID_REQ_SET_REPORT);
 }
 
-static void apple_magic_backlight_set(struct apple_magic_backlight *backlight,
+static int apple_magic_backlight_set(struct apple_magic_backlight *backlight,
 				     int brightness, char rate)
 {
+	struct hid_device *hdev = backlight->power->device;
+	int ret;
+
+	/*
+	 * usbhid only queues reports while the controller is autosuspended,
+	 * so keep it awake while lit, like t2touchbar_bl does.
+	 */
+	if (brightness && !backlight->full_on) {
+		ret = hid_hw_power(hdev, PM_HINT_FULLON);
+		if (ret < 0) {
+			hid_err(hdev, "keyboard backlight didn't power on (%pe)\n",
+				ERR_PTR(ret));
+			return ret;
+		}
+		backlight->full_on = true;
+	}
+
 	apple_magic_backlight_report_set(backlight->power, brightness ? 1 : 0, rate);
 	if (brightness)
 		apple_magic_backlight_report_set(backlight->brightness, brightness, rate);
+
+	if (!brightness && backlight->full_on) {
+		hid_hw_power(hdev, PM_HINT_NORMAL);
+		backlight->full_on = false;
+	}
+
+	return 0;
 }
 
 static int apple_magic_backlight_led_set(struct led_classdev *led_cdev,
@@ -935,8 +960,7 @@ static int apple_magic_backlight_led_set(struct led_classdev *led_cdev,
 	struct apple_magic_backlight *backlight = container_of(led_cdev,
 			struct apple_magic_backlight, cdev);
 
-	apple_magic_backlight_set(backlight, brightness, 1);
-	return 0;
+	return apple_magic_backlight_set(backlight, brightness, 1);
 }
 
 static int apple_magic_backlight_init(struct hid_device *hdev)
@@ -999,6 +1023,21 @@ static int apple_probe(struct hid_device *hdev,
 	if (ret) {
 		hid_err(hdev, "parse failed\n");
 		return ret;
+	}
+
+	/*
+	 * WELLSPRINGT2's Taptic Engine actuator (vendor usage page 0xff00,
+	 * usage 0x0d) is not HID_TYPE_USBMOUSE, so APPLE_IGNORE_MOUSE above
+	 * does not exclude it. t2_trackpad_actuator claims it instead.
+	 */
+	if (quirks & APPLE_IGNORE_MOUSE) {
+		unsigned int i;
+
+		for (i = 0; i < hdev->maxcollection; i++) {
+			if (hdev->collection[i].type == HID_COLLECTION_APPLICATION &&
+			    hdev->collection[i].usage == 0xff00000d)
+				return -ENODEV;
+		}
 	}
 
 	ret = hid_hw_start(hdev, HID_CONNECT_DEFAULT);

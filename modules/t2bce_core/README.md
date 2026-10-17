@@ -11,7 +11,6 @@ and must be built/loaded before `t2bce_core`.
 These kernel parameters have to be set in Linux commandline:
 
 - `mem_sleep_default=deep` This is S3. S2 and 4 should also work
-- `pm_async=off` needed on some machines to make pm ordering sequential. Since V0.04 it should work without it.
 
 
 # Workarounds
@@ -20,9 +19,11 @@ A fixed t2bce doesn't fix suspend. While it was broken for many years, developer
 The below units will help you around the roughest cliffs. Note that you can combine them into one unit. Also note the minus sign in for example `ExecStart=-/usr/bin...` will let the systemd unit continue in case of error. For example if you haven't tiny-dfr installed, the service should still continue to execute - with cosmetic errors in journal. Feel free to remove what you don't need.
 The code blocks are full commands. They will create the units and activate them. Copy them, modify them to your needs if you want and execute them. But don't forget the important bits like daemon-reload and systemctl enable.
 
-## Notes for MacBookPro15,1 graphics
+## Notes for MacBookPro15,1, MacBookPro16,1 and MacBookPro16,4 graphics
 
-We have upstreamed a patch for the 15,1 dGPU which will ship with kernel 7.3. Until release, suspend will not work unless you patch amdgpu yourself. The patch file is located in the patches folder.
+KaiT2en carries the apple-gmux, AMDGPU and HDA patches required for hybrid
+graphics on the MacBookPro15,1, MacBookPro16,1 and MacBookPro16,4. Runtime dGPU
+power management and system suspend/resume work on all three models.
 
 
 ## Notes for Macbooks with Touchbar
@@ -118,14 +119,14 @@ After reboot type `modinfo t2bce_core`. The output should show a version number 
 ## DKMS
 
 The Fedora installer registers `t2bce_core` together with `t2bce_dma`,
-`t2bce_vhci`, and `t2bce_audio` as the single `t2bce_stack` DKMS package. This
+`t2bce_vhci`, `t2bce_audio`, and `t2bce_ave` as the single `t2bce_stack` DKMS package. This
 keeps their exported symbols and ABI synchronized. Do not register this source
 directory as a separate DKMS package.
 
 ## Dev Debug
 
 We use pr_debug instead of pr_info in most places to keep the logs clean for average users.
-Use `t2bce_vhci.dyndbg=+p t2bce_dma.dyndbg=+p t2bce_core.dyndbg=+p t2bce_audio.dyndbg=+p` to see full output.
+Use `t2bce_vhci.dyndbg=+p t2bce_dma.dyndbg=+p t2bce_core.dyndbg=+p t2bce_audio.dyndbg=+p t2bce_ave.dyndbg=+p` to see full output.
 
 ## Support
 

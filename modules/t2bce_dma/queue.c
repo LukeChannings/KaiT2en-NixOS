@@ -153,18 +153,22 @@ static void t2bce_dma_handle_cq_completion(struct t2bce_dma_engine *dma, struct 
         return;
     }
     target_sq = (struct bce_queue_sq *) target;
-    if (target_sq->completion_tail != e->completion_index) {
-        pr_err("Completion index mismatch; this is likely going to make this driver unusable\n");
-        return;
-    }
     if (!target_sq->has_pending_completions) {
         target_sq->has_pending_completions = true;
         dma->int_sq_list[(*ce)++] = target_sq;
     }
-    cmpl = &target_sq->completion_data[e->completion_index];
-    cmpl->status = e->status;
-    cmpl->data_size = e->data_size;
-    cmpl->result = e->result;
+    cmpl = &target_sq->completion_data[target_sq->completion_tail];
+    if (target_sq->completion_tail != e->completion_index) {
+        pr_err("qid %u: completion index mismatch (expected %u, got %u); failing slot\n",
+               e->qid, target_sq->completion_tail, e->completion_index);
+        cmpl->status = BCE_COMPLETION_ERROR;
+        cmpl->data_size = 0;
+        cmpl->result = 0;
+    } else {
+        cmpl->status = e->status;
+        cmpl->data_size = e->data_size;
+        cmpl->result = e->result;
+    }
     wmb();
     target_sq->completion_tail = (target_sq->completion_tail + 1) % target_sq->el_count;
 }
@@ -219,11 +223,13 @@ struct bce_queue_sq *t2bce_dma_alloc_sq(struct t2bce_dma_engine *dma, int qid, u
                                  &q->dma_handle, GFP_KERNEL);
     q->completion = compl;
     q->userdata = userdata;
+    q->dma = dma;
     q->completion_data = kzalloc(sizeof(struct bce_sq_completion_data) * el_count, GFP_KERNEL);
     q->reg_mem_dma = dma->reg_mem_dma;
     atomic_set(&q->available_commands, el_count - 1);
     init_completion(&q->available_command_completion);
     atomic_set(&q->available_command_completion_waiting_count, 0);
+    init_waitqueue_head(&q->idle_wait);
     if (!q->data || !q->completion_data) {
         pr_err("DMA queue memory alloc failed\n");
         if (q->data)
@@ -257,7 +263,12 @@ EXPORT_SYMBOL_GPL(t2bce_dma_free_sq);
 
 int t2bce_dma_reserve_submission(struct bce_queue_sq *sq, unsigned long *timeout)
 {
+    if (!atomic_read(&sq->dma->available))
+        return -ESHUTDOWN;
+
     while (atomic_dec_if_positive(&sq->available_commands) < 0) {
+        if (!atomic_read(&sq->dma->available))
+            return -ESHUTDOWN;
         if (!timeout || !*timeout)
             return -EAGAIN;
         atomic_inc(&sq->available_command_completion_waiting_count);
@@ -266,10 +277,39 @@ int t2bce_dma_reserve_submission(struct bce_queue_sq *sq, unsigned long *timeout
             if (atomic_dec_if_positive(&sq->available_command_completion_waiting_count) < 0)
                 try_wait_for_completion(&sq->available_command_completion); /* consume the pending completion */
         }
+        if (!atomic_read(&sq->dma->available))
+            return -ESHUTDOWN;
+    }
+    if (!atomic_read(&sq->dma->available)) {
+        atomic_inc(&sq->available_commands);
+        return -ESHUTDOWN;
     }
     return 0;
 }
 EXPORT_SYMBOL_GPL(t2bce_dma_reserve_submission);
+
+void t2bce_dma_disable(struct t2bce_dma_engine *dma)
+{
+    atomic_set(&dma->available, 0);
+    smp_mb__after_atomic();
+}
+EXPORT_SYMBOL_GPL(t2bce_dma_disable);
+
+void t2bce_dma_enable(struct t2bce_dma_engine *dma)
+{
+    atomic_set(&dma->available, 1);
+    smp_mb__after_atomic();
+}
+EXPORT_SYMBOL_GPL(t2bce_dma_enable);
+
+void t2bce_dma_wait_command_queue_idle(struct t2bce_dma_engine *dma)
+{
+    struct bce_queue_sq *sq = dma->cmd_cmdq->sq;
+
+    wait_event(sq->idle_wait,
+            atomic_read(&sq->available_commands) == sq->el_count - 1);
+}
+EXPORT_SYMBOL_GPL(t2bce_dma_wait_command_queue_idle);
 
 void t2bce_dma_cancel_submission_reservation(struct bce_queue_sq *sq)
 {
@@ -295,6 +335,7 @@ void t2bce_dma_notify_submission_complete(struct bce_queue_sq *sq)
 {
     sq->head = (sq->head + 1) % sq->el_count;
     atomic_inc(&sq->available_commands);
+    wake_up_all(&sq->idle_wait);
     if (atomic_dec_if_positive(&sq->available_command_completion_waiting_count) >= 0) {
         complete(&sq->available_command_completion);
     }
@@ -660,14 +701,15 @@ static int t2bce_dma_flush_queue(struct t2bce_dma_engine *dma, u16 qid)
 }
 
 
-struct bce_queue_cq *t2bce_dma_create_cq(struct t2bce_dma_engine *dma, u32 el_count)
+struct bce_queue_cq *t2bce_dma_create_cq_range(struct t2bce_dma_engine *dma, u32 el_count,
+        int qid_min, int qid_max)
 {
     struct bce_queue_cq *cq;
     struct bce_queue_memcfg cfg;
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6,18,0)
-    int qid = ida_simple_get(&dma->queue_ida, BCE_QUEUE_USER_MIN, BCE_QUEUE_USER_MAX, GFP_KERNEL);
+    int qid = ida_simple_get(&dma->queue_ida, qid_min, qid_max, GFP_KERNEL);
 #else
-    int qid = ida_alloc_range(&dma->queue_ida, BCE_QUEUE_USER_MIN, BCE_QUEUE_USER_MAX - 1, GFP_KERNEL);
+    int qid = ida_alloc_range(&dma->queue_ida, qid_min, qid_max - 1, GFP_KERNEL);
 #endif
     if (qid < 0)
         return NULL;
@@ -688,10 +730,16 @@ struct bce_queue_cq *t2bce_dma_create_cq(struct t2bce_dma_engine *dma, u32 el_co
     dma->queues[qid] = (struct bce_queue *) cq;
     return cq;
 }
+EXPORT_SYMBOL_GPL(t2bce_dma_create_cq_range);
+
+struct bce_queue_cq *t2bce_dma_create_cq(struct t2bce_dma_engine *dma, u32 el_count)
+{
+    return t2bce_dma_create_cq_range(dma, el_count, BCE_QUEUE_USER_MIN, BCE_QUEUE_USER_MAX);
+}
 EXPORT_SYMBOL_GPL(t2bce_dma_create_cq);
 
-struct bce_queue_sq *t2bce_dma_create_sq(struct t2bce_dma_engine *dma, struct bce_queue_cq *cq, const char *name, u32 el_count,
-        int direction, bce_sq_completion compl, void *userdata)
+struct bce_queue_sq *t2bce_dma_create_sq_range(struct t2bce_dma_engine *dma, struct bce_queue_cq *cq, const char *name,
+        u32 el_count, int direction, bce_sq_completion compl, void *userdata, int qid_min, int qid_max)
 {
     struct bce_queue_sq *sq;
     struct bce_queue_memcfg cfg;
@@ -703,9 +751,9 @@ struct bce_queue_sq *t2bce_dma_create_sq(struct t2bce_dma_engine *dma, struct bc
     if (direction != DMA_TO_DEVICE && direction != DMA_FROM_DEVICE)
         return NULL; /* unsupported direction */
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6,18,0)
-    qid = ida_simple_get(&dma->queue_ida, BCE_QUEUE_USER_MIN, BCE_QUEUE_USER_MAX, GFP_KERNEL);
+    qid = ida_simple_get(&dma->queue_ida, qid_min, qid_max, GFP_KERNEL);
 #else
-    qid = ida_alloc_range(&dma->queue_ida, BCE_QUEUE_USER_MIN, BCE_QUEUE_USER_MAX - 1, GFP_KERNEL);
+    qid = ida_alloc_range(&dma->queue_ida, qid_min, qid_max - 1, GFP_KERNEL);
 #endif
     if (qid < 0)
         return NULL;
@@ -727,6 +775,14 @@ struct bce_queue_sq *t2bce_dma_create_sq(struct t2bce_dma_engine *dma, struct bc
     dma->queues[qid] = (struct bce_queue *) sq;
     spin_unlock(&dma->queues_lock);
     return sq;
+}
+EXPORT_SYMBOL_GPL(t2bce_dma_create_sq_range);
+
+struct bce_queue_sq *t2bce_dma_create_sq(struct t2bce_dma_engine *dma, struct bce_queue_cq *cq, const char *name, u32 el_count,
+        int direction, bce_sq_completion compl, void *userdata)
+{
+    return t2bce_dma_create_sq_range(dma, cq, name, el_count, direction, compl, userdata,
+            BCE_QUEUE_USER_MIN, BCE_QUEUE_USER_MAX);
 }
 EXPORT_SYMBOL_GPL(t2bce_dma_create_sq);
 

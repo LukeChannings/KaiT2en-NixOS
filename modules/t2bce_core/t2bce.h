@@ -13,6 +13,7 @@
 
 struct t2bce_device {
     struct pci_dev *pci, *pci0;
+    struct device_link *pci0_link;
     dev_t devt;
     struct device *dev;
     void __iomem *reg_mem_mb;
@@ -30,7 +31,9 @@ struct t2bce_device {
     bool no_state_fallback;
     bool no_state_resume;
     bool mailbox_channel_active;
+    bool dma_irq_disabled;
     struct mutex pm_lock;
+    struct mutex dma_completion_lock;
     struct mutex clients_lock;
     struct list_head clients;
     struct srcu_struct clients_srcu;
@@ -43,7 +46,7 @@ void t2bce_core_notify_resume_complete(struct t2bce_device *bce);
 void t2bce_core_clients_shutdown(struct t2bce_device *bce);
 void t2bce_core_clients_pm_reset(struct t2bce_device *bce);
 int t2bce_core_clients_pm_prepare(struct t2bce_device *bce);
-void t2bce_core_clients_pm_prepare_no_state(struct t2bce_device *bce);
+int t2bce_core_clients_pm_prepare_no_state(struct t2bce_device *bce);
 void t2bce_core_clients_pm_mark_no_state_resume(struct t2bce_device *bce);
 bool t2bce_core_clients_pm_has_no_state_resume(struct t2bce_device *bce);
 void t2bce_core_clients_pm_complete(struct t2bce_device *bce);

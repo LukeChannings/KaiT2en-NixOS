@@ -83,6 +83,42 @@
                         </div>
                     </div>
 
+                    {% elif section.type == 'donations' %}
+                    <div class="section-head">
+                        <h2>{{ section.title }}</h2>
+                        <p>{{ section.subtitle }}</p>
+                    </div>
+                    <div class="donation-grid">
+                        {% for developer in section.developers %}
+                        <article class="donation-card">
+                            <img class="donation-avatar" src="{{ base }}{{ developer.avatar }}" alt="{{ developer.name }} avatar">
+                            <h3>{{ developer.name }}</h3>
+                            <p>{{ developer.work }}</p>
+                            {% if developer.donations %}
+                            <div class="donation-actions">
+                                {% for donation in developer.donations %}
+                                {% if donation.get('href') %}
+                                <a href="{{ donation.href }}" class="btn btn-secondary"{% if donation.href.startswith('http') %} target="_blank" rel="noopener"{% endif %}>{{ donation.label }}</a>
+                                {% endif %}
+                                {% if donation.get('address') %}
+                                <button class="btn btn-secondary" type="button" data-copy="{{ donation.address }}" onclick="copyDonation(this)">
+                                    {{ icon.copy(16) }} {{ donation.get('copy_label', 'Copy address') }}
+                                </button>
+                                {% endif %}
+                                {% if donation.get('copy') %}
+                                <button class="btn btn-secondary" type="button" data-copy="{{ donation['copy'] }}" onclick="copyDonation(this)">
+                                    {{ icon.copy(16) }} {{ donation.label }}
+                                </button>
+                                {% endif %}
+                                {% endfor %}
+                            </div>
+                            {% else %}
+                            <p class="donation-pending">Donation options will be added later.</p>
+                            {% endif %}
+                        </article>
+                        {% endfor %}
+                    </div>
+
                     {% elif section.type == 'community' %}
                     <div class="section-head">
                         <h2>{{ section.title }}</h2>
@@ -125,13 +161,13 @@
 
 {% block modal_toc %}
             <div class="nav-modal-section">
-                {% for group in sidebar %}
-                <h4>{{ group.title }}</h4>
+                <h4>Page Navi</h4>
                 <div class="nav-modal-toc">
+                    {% for group in sidebar %}
                     {% for entry in group.entries %}
                     <a href="#{{ entry.id }}" onclick="closeMenu()">{{ entry.title }}</a>
                     {% endfor %}
+                    {% endfor %}
                 </div>
-                {% endfor %}
             </div>
 {% endblock %}
