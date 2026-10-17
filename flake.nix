@@ -210,7 +210,7 @@
                 name: system: lib.nameValuePair "nixos-${name}" system.config.system.build.toplevel
               ) checkConfigurations;
 
-            formatter = pkgs.nixfmt-rfc-style;
+            formatter = pkgs.nixfmt-tree;
           };
       }
     );
