@@ -28,6 +28,18 @@ buildNpmPackage {
 
   src = lib.cleanSource ./.;
 
+  # Deliberate divergence from upstream, kept as a patch so `src` stays
+  # byte-identical to super/main and upstream merges can take "theirs"
+  # unconditionally. The patch header records its drop condition; re-check it
+  # every upstream sync (see .agents/skills/sync-upstream/SKILL.md).
+  # (TypeScript source only — package-lock.json untouched, npmDepsHash stable.)
+  patches = [
+    (builtins.path {
+      name = "react-drm-touchbar-stateful-resume.patch";
+      path = ../../patches/nixos/react-drm-touchbar-stateful-resume.patch;
+    })
+  ];
+
   # node-gyp drives the C++ addon (binding.gyp) against the system DRM/Cairo
   # stack; npmDepsHash pins the fetched npm closure. Refresh it with
   #   prefetch-npm-deps apps/react-drm/package-lock.json
