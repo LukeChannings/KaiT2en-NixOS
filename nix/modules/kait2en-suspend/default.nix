@@ -1,15 +1,17 @@
 # NixOS module for the KaiT2en suspend/resume hardware fixes.
 #
-# Upstream ships systemd/kait2en-suspend.service, a oneshot bound to
-# sleep.target that runs scripts/fedora/kait2en-suspend.sh:
-#   * pre  (ExecStart, before sleep): unload modules that wedge suspend on
-#     certain T2 Macs — amdgpu on the dGPU MacBookPros, and the BCM4377
-#     Wi-Fi/BT stack (hci_bcm4377 + brcmfmac{,_wcc}).
+# Upstream writes kait2en-suspend.service inline from
+# scripts/fedora/install-suspend-service.sh (the old systemd/ directory is
+# gone): a oneshot bound to sleep.target, ordered after NetworkManager and
+# t2-services-suspend, that runs scripts/fedora/kait2en-suspend.sh:
+#   * pre  (ExecStart, before sleep): unload drivers that wedge S3 on certain
+#     T2 Macs — the BCM4377 Wi-Fi/BT stack (brcmfmac{,_wcc} + hci_bcm4377), or
+#     on BCM4350 machines (MacBookPro14,1) just brcmfmac.
 #   * post (ExecStop,  after resume): reload exactly the modules it unloaded,
 #     tracked via marker files under /run/kait2en-suspend.
 #
-# The script shells out to `modprobe`/`modprobe -r`, so this module packages it
-# with kmod + coreutils on PATH and reproduces the unit natively. The upstream
+# The script shells out to `rmmod`/`modprobe`, so this module packages it with
+# kmod + coreutils on PATH and reproduces the unit natively. The upstream
 # installer drops the script at /usr/local/libexec/kait2en; here it lives in the
 # Nix store and the unit points at that.
 {
@@ -60,12 +62,17 @@ in
     systemd.services.kait2en-suspend = {
       description = "Kait2en T2 suspend and resume hardware fixes";
       before = [ "sleep.target" ];
+      after = [
+        "NetworkManager.service"
+        "t2-services-suspend.service"
+      ];
       wantedBy = [ "sleep.target" ];
       unitConfig.StopWhenUnneeded = true;
 
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
+        TimeoutStopSec = 150;
         ExecStart = "${cfg.package}/bin/kait2en-suspend pre";
         ExecStop = "${cfg.package}/bin/kait2en-suspend post";
         # The helper records which modules it unloaded under here.
