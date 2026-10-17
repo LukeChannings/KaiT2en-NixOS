@@ -13,8 +13,12 @@
   gtk4,
   libadwaita,
   wrapGAppsHook4,
+  branding,
 }:
 
+let
+  polkit = import ../../nix/lib/kait2en-polkit.nix { inherit lib; };
+in
 rustPlatform.buildRustPackage {
   pname = "t2-fancontrol-gtk";
   version = "0.1.0";
@@ -36,6 +40,14 @@ rustPlatform.buildRustPackage {
 
   cargoLock.lockFile = ./Cargo.lock;
 
+  # The GUI loads the kait2en wordmark from /usr/local/share with a fatal
+  # .expect(); point it at the branding store copy.
+  postPatch = polkit.rewriteFhsPaths {
+    inherit branding;
+    helpers = [ ];
+    files = [ "src/main.rs" ];
+  };
+
   # glib-compile-resources runs from build.rs; pkg-config + the GTK stack are
   # the C deps the gtk4/libadwaita crates link against.
   nativeBuildInputs = [
@@ -55,6 +67,8 @@ rustPlatform.buildRustPackage {
   postInstall = ''
     install -Dm644 org.t2fancontrol.gtk.desktop \
       "$out/share/applications/org.t2fancontrol.gtk.desktop"
+    substituteInPlace "$out/share/applications/org.t2fancontrol.gtk.desktop" \
+      --replace-fail 'Exec=/usr/local/bin/' "Exec=$out/bin/"
     install -Dm644 assets/icons/hicolor/scalable/apps/org.t2fancontrol.gtk.svg \
       "$out/share/icons/hicolor/scalable/apps/org.t2fancontrol.gtk.svg"
     install -Dm644 assets/icons/hicolor/index.theme \

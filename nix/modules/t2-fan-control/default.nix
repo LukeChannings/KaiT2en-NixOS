@@ -21,7 +21,9 @@ in
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.callPackage ../../../apps/t2-fan-control/package.nix { };
+      default = pkgs.callPackage ../../../apps/t2-fan-control/package.nix {
+        branding = pkgs.callPackage ../../pkgs/kait2en-branding { };
+      };
       defaultText = lib.literalExpression "pkgs.callPackage ../../../apps/t2-fan-control/package.nix { }";
       description = "The t2-fan-control package providing t2-fancontrol-gtk.";
     };

@@ -1,11 +1,17 @@
 # NixOS module for t2-smc-control.
 #
-# Unlike the other apps, t2-smc-control ships no systemd unit or udev rule: it
-# is a plain GTK GUI. Its one piece of system integration is write access to the
-# applesmc `battery_charge_limit` sysfs node — upstream gets this at runtime by
-# shelling out to `pkexec chmod a+w` (see src/main.rs). This module installs the
-# GUI and, optionally, a udev rule that makes that node group-writable (video)
-# up front, so the charge-limit slider works without a per-session pkexec prompt.
+# Two pieces:
+#   * the GTK GUI (temperatures, thermal pressure, battery state, SMC RTC). It
+#     only *reads* the charge limit now; the limit itself is set through the
+#     t2sbs Smart Battery driver's `charge_control_end_threshold` on BAT0 (the
+#     desktop's battery settings / UPower), so the old applesmc chmod udev rule
+#     is gone.
+#   * the battery-gauging daemon. Mirrors upstream's
+#     apps/t2-smc-control/systemd/t2-smc-gaugingd.service (which hardcodes
+#     /usr/local/bin and so can't be consumed directly): a root
+#     `t2-smc-control --daemon` that lifts the charge limit for a full
+#     calibration charge like macOS powerd. Its state file
+#     /var/lib/t2-smc-control/gauging is provided by StateDirectory.
 {
   config,
   lib,
@@ -15,54 +21,78 @@
 
 let
   cfg = config.services.t2-smc-control;
+  branding = pkgs.callPackage ../../pkgs/kait2en-branding { };
 in
 {
   options.services.t2-smc-control = {
-    enable = lib.mkEnableOption "the T2 Mac SMC temperatures and battery charge-limit GUI";
-
-    package = lib.mkOption {
-      type = lib.types.package;
-      default = pkgs.callPackage ../../../apps/t2-smc-control/package.nix { };
-      defaultText = lib.literalExpression "pkgs.callPackage ../../../apps/t2-smc-control/package.nix { }";
-      description = "The t2-smc-control package providing the GTK GUI.";
-    };
-
-    enableChargeLimitRule = lib.mkOption {
-      type = lib.types.bool;
-      default = true;
-      description = ''
-        Whether to install a udev rule making the applesmc
-        `battery_charge_limit` sysfs node writable by the `video` group, so the
-        GUI can change the charge limit without a `pkexec` prompt. Users wanting
-        to set the limit must be in the `video` group (see {option}`users`).
-      '';
-    };
-
+    # Retired by upstream's t2sbs move. Kept as hidden no-ops that warn (not
+    # mkRemovedOptionModule errors) so existing configs keep evaluating.
     users = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
-      example = lib.literalExpression ''[ "alice" ]'';
+      visible = false;
+      description = "Obsolete; has no effect.";
+    };
+    enableChargeLimitRule = lib.mkOption {
+      type = lib.types.nullOr lib.types.bool;
+      default = null;
+      visible = false;
+      description = "Obsolete; has no effect.";
+    };
+
+    enable = lib.mkEnableOption "the T2 Mac SMC GUI and battery-gauging daemon";
+
+    package = lib.mkOption {
+      type = lib.types.package;
+      default = pkgs.callPackage ../../../apps/t2-smc-control/package.nix { inherit branding; };
+      defaultText = lib.literalExpression "pkgs.callPackage ../../../apps/t2-smc-control/package.nix { }";
+      description = "The t2-smc-control package providing the GUI and the gauging daemon.";
+    };
+
+    gauging.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
       description = ''
-        Users to add to the `video` group, granting write access to
-        `battery_charge_limit` when {option}`enableChargeLimitRule` is set.
+        Run `t2-smc-gaugingd`, which temporarily lifts the SMC charge limit for
+        a full charge when the battery gauge needs recalibration (DOD0 stale for
+        3 days, Qmax for 14, or no full charge for 21), as macOS powerd does.
+        Upstream's installer enables it unconditionally.
       '';
     };
   };
 
-  config = lib.mkIf cfg.enable {
-    environment.systemPackages = [ cfg.package ];
+  config = lib.mkMerge [
+    {
+      warnings =
+        lib.optional (cfg.users != [ ]) ''
+          services.t2-smc-control.users has no effect and can be removed: the
+          GUI only reads the charge limit, which is now set through the t2sbs
+          `charge_control_end_threshold` on BAT0 (desktop battery settings).
+        ''
+        ++ lib.optional (cfg.enableChargeLimitRule != null) ''
+          services.t2-smc-control.enableChargeLimitRule has no effect and can be
+          removed: t2-smc-control no longer writes the charge limit; set it
+          through the t2sbs `charge_control_end_threshold` on BAT0.
+        '';
+    }
+    (lib.mkIf cfg.enable {
+      environment.systemPackages = [ cfg.package ];
 
-    # applesmc exposes battery_charge_limit under its hwmon device. Make it
-    # group-writable (video) so the GUI's prepare_charge_limit_access() finds it
-    # already writable and skips the pkexec path entirely.
-    services.udev.extraRules = lib.mkIf cfg.enableChargeLimitRule ''
-      ACTION=="add|change", SUBSYSTEM=="hwmon", DRIVERS=="applesmc", RUN+="${pkgs.bash}/bin/sh -c 'p=/sys%p/battery_charge_limit; [ -e \"$$p\" ] && ${pkgs.coreutils}/bin/chgrp video \"$$p\" && ${pkgs.coreutils}/bin/chmod g+w \"$$p\"'"
-    '';
-
-    users.users = lib.mkIf cfg.enableChargeLimitRule (
-      lib.genAttrs cfg.users (_: {
-        extraGroups = [ "video" ];
-      })
-    );
-  };
+      # Mirrors systemd/t2-smc-gaugingd.service.
+      systemd.services.t2-smc-gaugingd = lib.mkIf cfg.gauging.enable {
+        description = "T2 SMC battery gauging mitigation";
+        after = [ "multi-user.target" ];
+        wantedBy = [ "multi-user.target" ];
+        serviceConfig = {
+          Type = "simple";
+          User = "root";
+          Group = "root";
+          ExecStart = "${lib.getExe cfg.package} --daemon";
+          Restart = "on-failure";
+          RestartSec = 10;
+          StateDirectory = "t2-smc-control";
+        };
+      };
+    })
+  ];
 }
