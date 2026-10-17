@@ -245,7 +245,8 @@ profile.
 
 ## One-time setup state (done; verify if CI misbehaves)
 
-- Repo secret `NIKS3_AUTH_TOKEN` must exist; the public key in
-  `.github/workflows/nix.yml` must match nix.channings.me's signing key, and
-  the niks3 push invocation should be verified against the deployed version.
+- Repo secret `NIKS3_AUTH_TOKEN` must exist; the cache's public key is
+  `garage:JZet/fsItH8cJ6SKLci1+BuMIQGDfZSa/8GxGpKcxss=` (set in both
+  `.github/workflows/nix.yml` and the flake's `nixConfig`), and the niks3
+  push invocation should be verified against the deployed version.
 - Upstream's Fedora workflows are disabled in GitHub repo settings.

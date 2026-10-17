@@ -1,6 +1,14 @@
 {
   description = "KaiT2en — Apple T2 Mac kernel modules and userspace apps, packaged for Nix";
 
+  # CI (.github/workflows/nix.yml) pushes everything `nix flake check` builds
+  # to this cache, so consumers and hardware smoke tests substitute the kernel
+  # and modules instead of rebuilding them.
+  nixConfig = {
+    extra-substituters = [ "https://nix.channings.me" ];
+    extra-trusted-public-keys = [ "garage:JZet/fsItH8cJ6SKLci1+BuMIQGDfZSa/8GxGpKcxss=" ];
+  };
+
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
 

@@ -51,7 +51,7 @@ jobs:
         with:
           extra-conf: |
             extra-substituters = https://nix.channings.me
-            extra-trusted-public-keys = nix.channings.me:0TRfpg06E9NyZIBK3hQ4bGi5INAWSCB+I2zVCGjHnGw=
+            extra-trusted-public-keys = garage:JZet/fsItH8cJ6SKLci1+BuMIQGDfZSa/8GxGpKcxss=
 
       - name: Build gate (nix flake check)
         run: nix flake check -L
