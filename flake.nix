@@ -52,6 +52,9 @@
                       # is inert and the gate would not build or cache it — the
                       # per-profile toplevels would even collapse to identical drvs.
                       services.pipewire.enable = true;
+                      # Likewise NetworkManager: t2-services provisions the
+                      # "Apple T2 Bridge" link-local profile through it.
+                      networking.networkmanager.enable = true;
                       system.stateVersion = lib.versions.majorMinor lib.version;
                     }
                   )
@@ -101,21 +104,24 @@
           # units, udev rules, group memberships). Each module defaults its
           # package to `pkgs.callPackage ./apps/<name>/package.nix {}`; add this
           # flake's overlay (or set `services.<app>.package`) if you want a custom
-          # build. `default` imports all three; the per-app modules are exposed
-          # too.
+          # build. `default` imports all of them; the per-app modules are
+          # exposed too.
           nixosModules = {
             default = ./nix/modules;
             kait2en-kernel = ./nix/modules/kait2en-kernel;
             brcm-firmware = ./nix/modules/brcm-firmware;
             t2-fan-control = ./nix/modules/t2-fan-control;
             t2-smc-control = ./nix/modules/t2-smc-control;
-            react-drm = ./nix/modules/react-drm;
+            t2-touchbar = ./nix/modules/t2-touchbar;
             t2bce-audio-dsp = ./nix/modules/t2bce-audio-dsp;
             kait2en-suspend = ./nix/modules/kait2en-suspend;
-            t2-ncm = ./nix/modules/t2-ncm;
+            kait2en-rtc-sync = ./nix/modules/kait2en-rtc-sync;
+            # Shared bridge-link integration + t2-ave + t2-touchid.
+            t2-services = ./nix/modules/t2-services;
             t2-power-explorer = ./nix/modules/t2-power-explorer;
             t2-power-tune = ./nix/modules/t2-power-tune;
-            t2-cpu-control = ./nix/modules/t2-cpu-control;
+            t2-zone-power = ./nix/modules/t2-zone-power;
+            t2-force-click = ./nix/modules/t2-force-click;
             t2-gpu-control = ./nix/modules/t2-gpu-control;
           };
 
@@ -141,9 +147,8 @@
             kait2en = (final.callPackage ./apps { }) // {
               kernelModulesFor = kernel: final.callPackage ./modules { inherit kernel; };
               # The ALSA UCM2 tree carrying the Apple T2 split-channel profiles
-              # (stock alsa-ucm-conf + our AppleT2 use cases). Exposed for the
-              # UCM-based split; the t2bce-audio-dsp NixOS module itself uses the
-              # kekrby ACP profile-set split, so it does not consume this.
+              # (stock alsa-ucm-conf + our AppleT2 use cases); the t2bce-audio-dsp
+              # NixOS module points ALSA_CONFIG_UCM2 at it.
               t2bce_audio-alsa-ucm-conf = final.callPackage ./nix/pkgs/t2bce_audio-alsa-ucm-conf { };
               # The Fedora-matched base kernel + the SPI-HID ABI patch the T2
               # HID modules need (see nix/pkgs/kernel for the selection policy).
@@ -187,6 +192,8 @@
                 # The patched KaiT2en kernel (Fedora-matched base + SPI-HID ABI patch).
                 kernel = kait2enKernel;
                 inherit audioUcmConf;
+                # amdgpu + the gpu-runtime-pm series (hardware.kait2en.gpuRuntimePm).
+                gpu-runtime-pm = pkgs.callPackage ./nix/pkgs/gpu-runtime-pm { kernel = kait2enKernel; };
                 t2bce_audio-alsa-ucm-conf = audioUcmConf;
               };
           in

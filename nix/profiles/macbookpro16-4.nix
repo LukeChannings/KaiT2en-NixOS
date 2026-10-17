@@ -1,9 +1,11 @@
-# KaiT2en profile for the MacBookPro16,4 (T2, 2019 16" MacBook Pro, alt board).
+# KaiT2en profile for the MacBookPro16,4 (T2, 2019 16" MacBook Pro, Radeon Pro 5600M).
 #
-# Turns on everything applicable to this machine: the out-of-tree T2 kernel
-# drivers, Wi-Fi/Bluetooth firmware, the suspend/resume fixes, the internal T2
-# debug-interface handling, the Touch Bar runtime, the fan and SMC GUIs, and
-# this model's audio DSP profile ("16_4"). Import it from your host config:
+# Turns on everything upstream's installer sets up on this machine: the
+# out-of-tree T2 kernel drivers, Wi-Fi/Bluetooth firmware, the suspend/resume
+# and RTC fixes, the T2 bridge services (AVE, Touch ID), the Touch Bar daemon,
+# the fan/SMC/power/Force Click apps, hybrid graphics (the gpu-runtime-pm
+# amdgpu + t2-hybrid-gpu-control) and this model's audio DSP profile
+# ("16_4"). Import it from your host config:
 #
 #   imports = [ inputs.kait2en.nixosProfiles.macbookpro16-4 ];
 #
@@ -12,10 +14,11 @@
 #     nixpkgs.config.allowUnfree = true (or allowlist "brcm-firmware") and have
 #     KVM available, or set hardware.kait2en.firmware.enable = false if you copy
 #     the Broadcom blobs in by hand instead.
-#   * The Touch Bar (react-drm) and the SMC charge-limit slider need your user
-#     in the video/input groups; add it with
-#     services.react-drm.users = [ "<you>" ];
-#     services.t2-smc-control.users = [ "<you>" ];
+#   * Touch ID: log into macOS once after a T2 power loss so the SEP unlocks,
+#     then bind your finger with `fprintd-enroll` (or set
+#     services.t2-touchid.bindUser = "<you>"; to bind automatically).
+#   * The Touch Bar needs your user in the kait2en-touchbar group:
+#     services.t2-touchbar.users = [ "<you>" ];
 { pkgs, ... }:
 
 {
@@ -24,27 +27,33 @@
   hardware.kait2en = {
     enable = true;
     firmware.enable = true;
-    # Radeon Pro 5600M dGPU — one of the models the installer enables AMDGPU
-    # ASPM on (amdgpu.aspm=1).
+    # Generic installer branch: amdgpu.aspm=1, pcie_aspm=force + powersave.
     amdgpuAspm = true;
-    # Titan Ridge Thunderbolt (8086:15e8/15eb): upstream removes the acpi_osi
-    # overrides here (they break hotplug on this Thunderbolt generation).
-    acpiOsiOverride = false;
-    # Radeon Pro dGPU — this model uses t2-dgpu-control.
-    gpuControl.mode = "dgpu";
+    pcieAspm = "force";
+    # install-apps.sh: t2-hybrid-gpu-control on this model, on top of the
+    # gpu-runtime-pm amdgpu (GMUX runtime PM).
+    gpuRuntimePm.enable = true;
+    gpuControl.mode = "hybrid";
   };
 
+  services.t2-touchbar.enable = true;
   services.kait2en-suspend.enable = true;
-  services.t2-ncm.enable = true;
-  services.react-drm.enable = true;
+  services.kait2en-rtc-sync.enable = true;
+  # Shared bridge-link integration (NM "Apple T2 Bridge" link-local profile +
+  # suspend hook runner), and the bridgeOS services upstream installs on every
+  # T2 Mac: AVE (t2remote) and the Touch ID bridge for fprintd.
+  services.t2-services.enable = true;
+  services.t2-ave.enable = true;
+  services.t2-touchid.enable = true;
   services.t2-fan-control.enable = true;
   services.t2-smc-control.enable = true;
   services.t2-power-explorer.enable = true;
   services.t2-power-tune.enable = true;
-  services.t2-cpu-control.enable = true;
+  services.t2-zone-power.enable = true;
+  services.t2-force-click.enable = true;
 
   # t2-journal has no system integration — just ship the CLI.
-  environment.systemPackages = [ (pkgs.callPackage ../../apps/t2-journal/package.nix { }) ];
+  environment.systemPackages = [ (pkgs.callPackage ../../t2-services/t2-journal/package.nix { }) ];
 
   services.t2bce-audio-dsp = {
     enable = true;
