@@ -22,15 +22,15 @@
 let
   cfg = config.hardware.kait2en;
 
-  # The KaiT2en kernel: stock 7.0 + the SPI-HID ABI patch the out-of-tree T2
+  # The KaiT2en kernel: the Fedora-matched base kernel + the SPI-HID ABI patch the out-of-tree T2
   # HID drivers (hid_t2magicmouse, t2touchbar/t2hid) compile against. Stock
-  # `linux_7_0` lacks the SPI HID `enum hid_type` members and HID_SPI_DEVICE()
+  # nixpkgs kernels lack the SPI HID `enum hid_type` members and HID_SPI_DEVICE()
   # those drivers reference, so building them against an unpatched kernel
   # fails. See ../../pkgs/kernel.
   #
   # Applied directly (not via callPackage) so the result keeps the kernel's own
   # chainable `.override` — callPackage would wrap it in makeOverridable and
-  # shadow that with an override taking only `linux_7_0`, breaking the
+  # shadow that with an override taking only the base kernel, breaking the
   # `pkgs.linuxPackagesFor kait2enKernel` below (NixOS overrides the kernel
   # with `{ features, kernelPatches, randstructSeed }`).
   kait2enKernel = import ../../pkgs/kernel { inherit pkgs; };
@@ -55,11 +55,11 @@ in
     kernelPackages = lib.mkOption {
       type = lib.types.raw;
       default = pkgs.linuxPackagesFor kait2enKernel;
-      defaultText = lib.literalExpression "pkgs.linuxPackagesFor (the patched KaiT2en 7.0 kernel)";
+      defaultText = lib.literalExpression "pkgs.linuxPackagesFor (the patched KaiT2en kernel)";
       description = ''
         The kernelPackages set the T2 Mac boots and the out-of-tree modules
         build against. Defaults to {option}`boot.kernelPackages` built from the
-        patched KaiT2en kernel (stock Linux 7.0 plus the SPI-HID ABI patch the
+        patched KaiT2en kernel (the Fedora-matched base kernel plus the SPI-HID ABI patch the
         `hid_t2magicmouse` and `t2touchbar` drivers require). Override only if
         you carry that patch in your own kernel.
       '';
@@ -95,20 +95,27 @@ in
         "t2gmux"
         "t2thunderbolt"
         "t2smp"
+        "t2sbs"
         "hid_t2magicmouse"
+        # The T2 internal trackpad moved from hid_t2magicmouse to
+        # t2_precision_trackpad; the actuator gives it Force Click haptics.
+        "t2_trackpad_actuator"
+        "t2_precision_trackpad"
       ];
       description = ''
         Loadable module names (not package names) to load at boot. Note these
         differ from the package names: the `t2touchbar` package builds `t2hid`,
         `t2touchbar_bl` and `t2touchbar_kbd`, and the `t2bce` package builds the
-        four split modules `t2bce_dma`, `t2bce_core`, `t2bce_vhci` and
-        `t2bce_audio`.
+        split modules `t2bce_dma`, `t2bce_core`, `t2bce_vhci`, `t2bce_audio`
+        and `t2bce_ave`.
 
-        The old `t2touchbar_cfg` USB configuration selector is gone: selecting
-        the Touch Bar display's HID+display USB configuration moved to
-        userspace (react-drm's `99-react-drm.rules` udev rule and
-        `react-drm-tb-detach` helper drive `bConfigurationValue` when the
-        `05ac:8302` device appears). Enable {option}`services.react-drm` for it.
+        `t2bce_ave` is not loaded here: upstream loads it only from the AVE
+        service unit (`ExecStartPre=modprobe t2bce_ave`), which
+        {option}`services.t2-ave` mirrors.
+
+        The Touch Bar display's USB configuration (`bConfigurationValue` of
+        `05ac:8302`) is selected in userspace by the T2 Touch Bar daemon's
+        attach service; enable {option}`services.t2-touchbar` for it.
 
         The out-of-tree `apfs` driver was dropped (upstream deleted
         `modules/apfs`). NixOS users who must mount the macOS APFS volumes can
@@ -122,22 +129,22 @@ in
       type = lib.types.listOf lib.types.str;
       default = [
         "t2bce_dma"
-        "t2hid"
-        "hid_t2magicmouse"
         "t2bce_core"
         "t2bce_vhci"
+        "t2hid"
+        "t2smc"
+        "t2sbs"
       ];
       description = ''
-        Modules to load from the initramfs (early), mirroring the upstream
-        `dracut --force-drivers` list in the installer's `kait2en-prepare`
-        (`t2bce_dma t2hid hid_t2magicmouse t2bce_core t2bce_vhci`). These are
-        the input + BCE essentials that must bind before the display and root
-        device come up; the rest (fan/SMC, audio, gmux, thunderbolt, …) load
-        at normal boot.
+        Modules to load from the initramfs (early), mirroring upstream's
+        steady-state `EARLY_MODULES` in scripts/fedora/rebuild-initramfs.sh
+        (`t2bce_dma t2bce_core t2bce_vhci t2hid t2smc t2sbs`): the BCE +
+        keyboard essentials, `t2smc` so its SMC-backed RTC sets the wall clock
+        early, and `t2sbs` right after it so BAT0 already carries
+        `charge_control_end_threshold` when udev/UPower first see it.
 
-        `t2hid` replaces the removed `t2touchbar_cfg` here: the display USB
-        configuration is now selected in userspace by react-drm, and `t2hid`
-        must be present early so the Touch Bar HID interface binds.
+        `hid_t2magicmouse` left this list upstream: it no longer drives the
+        internal trackpad (t2_precision_trackpad does, at normal boot).
       '';
     };
 
@@ -155,6 +162,8 @@ in
         "apple_bce"
         "apple_mfi_fastcharge"
         "apple_gmux"
+        # Replaced by the out-of-tree t2sbs Smart Battery driver.
+        "sbs"
       ];
       description = ''
         Conflicting in-tree / upstream drivers to blacklist, matching the
@@ -169,26 +178,46 @@ in
 
     amdgpuAspm = lib.mkOption {
       type = lib.types.bool;
-      default = false;
+      default = true;
       description = ''
-        Add `amdgpu.aspm=1` to enable ASPM on the discrete AMD GPU. The Fedora
-        installer sets this only on MacBookPro15,1/15,3/16,1/16,4 (the models
-        with a supported AMD dGPU). NixOS cannot PCI-probe at eval time, so the
-        matching per-model profile turns it on; leave it off on integrated-GPU
-        machines.
+        Add `amdgpu.aspm=1`. The Fedora installer now adds it on every model
+        except the MacBookPro16,1, whose Navi 14 drops off the PCIe bus under
+        load with forced ASPM. Upstream decides by DMI product name, which Nix
+        eval cannot read, so this defaults to the generic branch and the
+        MacBookPro16,1 profile turns it off.
+      '';
+    };
+
+    pcieAspm = lib.mkOption {
+      type = lib.types.enum [
+        "force"
+        "policy"
+        "firmware"
+      ];
+      default = "force";
+      description = ''
+        PCIe ASPM handling, mirroring the installer's DMI-conditional args:
+
+        - `"force"` — `pcie_aspm=force pcie_aspm.policy=powersave` (the
+          generic branch).
+        - `"policy"` — only `pcie_aspm.policy=powersave`; iMacs/iMac Pro, whose
+          Ethernet controllers do not survive forced ASPM.
+        - `"firmware"` — neither; the MacBookPro16,1, leaving its Navi 14 link
+          to the firmware and amdgpu.
+
+        Set per model by the profiles.
       '';
     };
 
     acpiOsiOverride = lib.mkOption {
       type = lib.types.bool;
-      default = true;
+      default = false;
       description = ''
-        Add the `acpi_osi=!Darwin` and `acpi_osi="Windows 2012"` overrides.
-        Upstream *removes* these on Titan Ridge (8086:15e8/15eb) and Ice Lake
-        (8086:8a0d/8a17) Thunderbolt machines, where they break hotplug, and
-        leaves them in place otherwise. NixOS cannot PCI-probe at eval time, so
-        this defaults on and the profiles for those newer Thunderbolt
-        generations set it false.
+        Add the legacy `acpi_osi=!Darwin` and `acpi_osi="Windows 2012"`
+        overrides. Upstream's installer now strips every `acpi_osi` argument
+        unconditionally (they break Thunderbolt hotplug on Titan Ridge / Ice
+        Lake and are obsolete elsewhere), so this is off; it is kept only as an
+        opt-in escape hatch.
       '';
     };
 
@@ -247,15 +276,15 @@ in
       "i915.enable_guc=2"
       "intel_iommu=on"
       "iommu=pt"
-      "pm_async=off"
+      # pm_async=off was dropped upstream ("kernel-args: remove pm_async=off")
+      # once t2bce fixed async PM; pci=noaer was dropped as well.
       "brcmfmac.p2pon=0"
-      "pcie_aspm=force"
-      "pcie_aspm.policy=powersave"
       "pcie_ports=compat"
-      "pci=noaer"
       "mem_sleep_default=deep"
       "initcall_blacklist=cmos_init,magicmouse_driver_init"
     ]
+    ++ lib.optional (cfg.pcieAspm == "force") "pcie_aspm=force"
+    ++ lib.optional (cfg.pcieAspm != "firmware") "pcie_aspm.policy=powersave"
     ++ lib.optionals cfg.acpiOsiOverride [
       "acpi_osi=!Darwin"
       # The space is kept together by the kernel's command-line quote
