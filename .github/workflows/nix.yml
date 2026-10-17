@@ -1,0 +1,77 @@
+# KaiT2en-NixOS build gate + binary cache push.
+#
+# This is OUR workflow (the NixOS fork's); the sibling workflows in this
+# directory (kernel-copr, installer, pages, discord) are inherited from
+# upstream KaiT2en-Fedora, are Fedora-specific, and are kept disabled in the
+# repo settings rather than deleted so upstream merges never conflict here.
+#
+# What it does:
+#   * PRs + pushes to main: `nix flake check` — the complete build gate
+#     (patched kernel, every out-of-tree module, every app, and the three
+#     per-profile NixOS toplevels; see `checks` in flake.nix).
+#   * Then pushes everything built to the niks3 binary cache at
+#     https://nix.channings.me so hardware smoke tests and consumers
+#     (hartlandia) substitute instead of rebuilding — a sync-PR kernel is
+#     built once, here.
+#
+# Secrets:
+#   NIKS3_AUTH_TOKEN — upload token for nix.channings.me (niks3 signs
+#   server-side; no client signing key needed).
+name: nix
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: nix-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Nothing here pushes back to the repo; don't leave the token on disk.
+          persist-credentials: false
+
+      # Kernel builds need tens of GB; the hosted runner's / has ~14 GB free.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force || true
+          df -h /
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra-conf: |
+            extra-substituters = https://nix.channings.me
+            extra-trusted-public-keys = nix.channings.me:0TRfpg06E9NyZIBK3hQ4bGi5INAWSCB+I2zVCGjHnGw=
+
+      - name: Build gate (nix flake check)
+        run: nix flake check -L
+
+      - name: Push to nix.channings.me (niks3)
+        # Pushes on PRs too, so the sync-branch kernel is cached before the
+        # hardware smoke test. Collect every check's out paths and push their
+        # closure. Verify the client invocation against the deployed niks3
+        # version if this step fails.
+        if: ${{ github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'push' }}
+        env:
+          NIKS3_AUTH_TOKEN: ${{ secrets.NIKS3_AUTH_TOKEN }}
+        run: |
+          mapfile -t names < <(nix eval --json '.#checks.x86_64-linux' \
+            --apply builtins.attrNames | nix run nixpkgs#jq -- -r '.[]')
+          paths=()
+          for name in "${names[@]}"; do
+            mapfile -t out < <(nix build ".#checks.x86_64-linux.$name" --print-out-paths)
+            paths+=("${out[@]}")
+          done
+          nix run github:Mic92/niks3 -- push \
+            --server https://nix.channings.me \
+            "${paths[@]}"
