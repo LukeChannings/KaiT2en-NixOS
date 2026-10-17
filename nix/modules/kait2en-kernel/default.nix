@@ -238,6 +238,25 @@ in
       '';
     };
 
+    gpuRuntimePm = {
+      enable = lib.mkEnableOption ''
+        upstream's GPU runtime PM amdgpu (scripts/fedora/install-gpu-runtime-pm.sh):
+        an out-of-tree amdgpu carrying patches/runtime/gpu-runtime-pm, which
+        shadows the in-tree module and is soft-dependent on t2gmux. Upstream
+        installs it on the MacBookPro15,1 / 16,1 / 16,4 (GMUX runtime PM, so
+        the dGPU reaches D3cold under t2-hybrid-gpu-control) and the
+        iMac20,1 / 20,2 (5K panel)'';
+
+      package = lib.mkOption {
+        type = lib.types.package;
+        default = pkgs.callPackage ../../pkgs/gpu-runtime-pm {
+          kernel = config.boot.kernelPackages.kernel;
+        };
+        defaultText = lib.literalExpression "the patched amdgpu built against config.boot.kernelPackages.kernel";
+        description = "The patched amdgpu module package (see nix/pkgs/gpu-runtime-pm).";
+      };
+    };
+
     extraKernelParams = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -263,7 +282,14 @@ in
     # host still override `boot.kernelPackages` if it must.
     boot.kernelPackages = lib.mkDefault cfg.kernelPackages;
 
-    boot.extraModulePackages = cfg.modulePackages;
+    boot.extraModulePackages =
+      cfg.modulePackages ++ lib.optional cfg.gpuRuntimePm.enable cfg.gpuRuntimePm.package;
+
+    # install-gpu-runtime-pm.sh's kait2en-gpu-runtime-pm.conf: GMUX must
+    # provide the power callbacks before AMDGPU probes.
+    boot.extraModprobeConfig = lib.mkIf cfg.gpuRuntimePm.enable ''
+      softdep amdgpu pre: t2gmux
+    '';
 
     boot.kernelModules = cfg.loadModules;
     boot.initrd.kernelModules = cfg.initrdModules;

@@ -3,12 +3,22 @@
 # From upstream's install-apps.sh, a T2 Mac gets exactly one of these (or
 # neither):
 #
-#   MacBookPro15,1                 -> t2-hybrid-gpu-control
-#   MacBookPro15,3 / 16,1 / 16,4   -> t2-dgpu-control
+#   MacBookPro15,1 / 16,1 / 16,4   -> t2-hybrid-gpu-control
+#   MacBookPro15,3                 -> t2-dgpu-control
 #   others                         -> neither
 #
 # `hardware.kait2en.gpuControl.mode` selects which package (and, for dgpu, which
-# systemd units) is installed. Profiles set it per the table above.
+# systemd units) is installed. Profiles set it per model.
+#
+# hybrid needs upstream's gpu-runtime-pm amdgpu (GMUX runtime PM): without it
+# vga_switcheroo never reports DynPwr/DynOff and the hybrid helper refuses to
+# enable. Enable `hardware.kait2en.gpuRuntimePm` alongside it (the profiles
+# do; a warning fires otherwise).
+#
+# hybrid also installs upstream's contrib/90-kait2en-gsk-renderer.conf into
+# /etc/environment.d (GSK_RENDERER=ngl: GTK's Vulkan renderer would open the
+# AMD render node and wake the dGPU on every GTK app start). Upstream's
+# `flatpak override --system --env=GSK_RENDERER=ngl` is not mirrored.
 #
 # dgpu units: the app toggles four units via `systemctl enable/disable`. NixOS
 # owns unit files declaratively, so we define them natively (exact names +
@@ -43,8 +53,9 @@ in
       default = null;
       description = ''
         Which GPU control app to install, matching this Mac's model:
-        `"dgpu"` (MacBookPro15,3 / 16,1 / 16,4), `"hybrid"` (MacBookPro15,1),
-        or `null` for models with neither.
+        `"hybrid"` (MacBookPro15,1 / 16,1 / 16,4; needs
+        {option}`hardware.kait2en.gpuRuntimePm.enable`), `"dgpu"`
+        (MacBookPro15,3), or `null` for models with neither.
       '';
     };
 
@@ -85,7 +96,14 @@ in
 
   config = lib.mkMerge [
     (lib.mkIf (cfg.mode == "hybrid") {
+      warnings = lib.optional (!config.hardware.kait2en.gpuRuntimePm.enable) ''
+        hardware.kait2en.gpuControl.mode = "hybrid" without
+        hardware.kait2en.gpuRuntimePm.enable: the stock amdgpu has no GMUX
+        runtime PM, so t2-hybrid-gpu-control cannot power the dGPU down.
+      '';
       environment.systemPackages = [ cfg.hybridPackage ];
+      environment.etc."environment.d/90-kait2en-gsk-renderer.conf".source =
+        ../../../apps/t2-hybrid-gpu-control/contrib/90-kait2en-gsk-renderer.conf;
     })
 
     (lib.mkIf (cfg.mode == "dgpu") {
