@@ -31,17 +31,18 @@
           {
             kernelModulesFor = kernel: pkgs.callPackage ./modules { inherit kernel; };
 
-            # The KaiT2en kernel: stock 7.0 + the SPI-HID ABI patch the
-            # out-of-tree T2 HID drivers compile against. Build the modules
+            # The KaiT2en kernel: the Fedora-matched base kernel (selected in
+            # nix/pkgs/kernel — the single bump site) + the SPI-HID ABI patch
+            # the out-of-tree T2 HID drivers compile against. Build the modules
             # against *this* (e.g. `kernelModulesFor kait2enKernel`).
             #
             # Applied directly (not via callPackage) so the result keeps the
             # *kernel's* own chainable `.override` — callPackage would wrap it
             # in makeOverridable, shadowing that with an override that only
-            # takes `linux_7_0`, which breaks `pkgs.linuxPackagesFor` /
+            # takes `pkgs`, which breaks `pkgs.linuxPackagesFor` /
             # `boot.kernelPackages` (they call `kernel.override { features,
             # kernelPatches, randstructSeed }`).
-            kait2enKernel = import ./nix/pkgs/kernel { inherit (pkgs) linux_7_0; };
+            kait2enKernel = import ./nix/pkgs/kernel { inherit pkgs; };
           }
         );
 
@@ -90,10 +91,11 @@
             # UCM-based split; the t2bce-audio-dsp NixOS module itself uses the
             # kekrby ACP profile-set split, so it does not consume this.
             t2bce_audio-alsa-ucm-conf = final.callPackage ./nix/pkgs/t2bce_audio-alsa-ucm-conf { };
-            # Stock 7.0 + the SPI-HID ABI patch the T2 HID modules need.
+            # The Fedora-matched base kernel + the SPI-HID ABI patch the T2
+            # HID modules need (see nix/pkgs/kernel for the selection policy).
             # Applied directly (not callPackage) so the kernel's own chainable
             # `.override` survives for linuxPackagesFor/boot.kernelPackages.
-            kernel = import ./nix/pkgs/kernel { inherit (final) linux_7_0; };
+            kernel = import ./nix/pkgs/kernel { pkgs = final; };
             brcm-firmwareFor = version: final.callPackage ./nix/pkgs/brcm-firmware { inherit version; };
             brcm-firmware = final.callPackage ./nix/pkgs/brcm-firmware { version = "sonoma"; };
           };
@@ -112,11 +114,12 @@
               "override"
               "overrideDerivation"
             ];
-          # The KaiT2en kernel: stock 7.0 + the SPI-HID ABI patch the
-          # out-of-tree T2 HID drivers compile against.
+          # The KaiT2en kernel: the Fedora-matched base kernel + the SPI-HID
+          # ABI patch the out-of-tree T2 HID drivers compile against (see
+          # nix/pkgs/kernel for the selection policy and single bump site).
           # Applied directly (not callPackage) so the kernel's own chainable
           # `.override` survives for linuxPackagesFor/boot.kernelPackages.
-          kait2enKernel = import ./nix/pkgs/kernel { inherit (pkgs) linux_7_0; };
+          kait2enKernel = import ./nix/pkgs/kernel { inherit pkgs; };
           # Modules built against the KaiT2en kernel, so each is buildable on
           # its own from the flake and the HID drivers find the SPI-HID
           # symbols.

@@ -33,7 +33,7 @@ let
   # shadow that with an override taking only `linux_7_0`, breaking the
   # `pkgs.linuxPackagesFor kait2enKernel` below (NixOS overrides the kernel
   # with `{ features, kernelPatches, randstructSeed }`).
-  kait2enKernel = import ../../pkgs/kernel { inherit (pkgs) linux_7_0; };
+  kait2enKernel = import ../../pkgs/kernel { inherit pkgs; };
 
   # Build every KaiT2en out-of-tree module against the configured kernel. This
   # is exactly what the flake's `lib.<system>.kernelModulesFor kernel` does;

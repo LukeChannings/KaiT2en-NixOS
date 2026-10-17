@@ -23,11 +23,23 @@
 # `pkgs.linuxPackagesFor` to get a kernelPackages set for
 # `boot.kernelPackages`, and build the T2 modules against `kait2enKernel`
 # itself (see ../../modules and ../../modules/kait2en-kernel).
+# Kernel selection policy: match the kernel series Fedora stable currently
+# ships (upstream KaiT2en targets Fedora's kernel; their modules often need
+# compat fixes before a newer series works). Bump `baseKernel` below — the
+# single site — when Fedora moves and upstream's modules are compatible.
+# Query Fedora's current series with:
+#   curl -s 'https://bodhi.fedoraproject.org/updates/?packages=kernel&status=stable&rows_per_page=1' | jq -r '.updates[0].version'
+# If nixpkgs doesn't ship that exact series yet, take the nearest lower one.
+# Any bump must re-check the SPI-HID ABI patch below against the new kernel's
+# include/linux/hid.h (drop the patch if HID_SPI_DEVICE went in-tree; rebase
+# it if the hunk drifted).
 {
-  linux_7_0,
+  pkgs,
 }:
 
 let
+  baseKernel = pkgs.linux_7_0; # ← kernel bumps touch only this line
+
   # Content-address the patch by its own bytes, NOT as a subpath of the flake
   # source. When KaiT2en is consumed as a `path:`/git flake input, every file in
   # the repo lives under one `…-source` store path whose hash covers the WHOLE
@@ -43,9 +55,9 @@ let
     path = ./patches/0001-hid-add-spi-hid-device-types-and-macro.patch;
   };
 in
-linux_7_0.override {
+baseKernel.override {
   # Append, don't replace: keep nixpkgs' own structuredExtraConfig / patches.
-  kernelPatches = (linux_7_0.kernelPatches or [ ]) ++ [
+  kernelPatches = (baseKernel.kernelPatches or [ ]) ++ [
     {
       name = "kait2en-hid-spi-device-types";
       patch = hidSpiDeviceTypesPatch;
