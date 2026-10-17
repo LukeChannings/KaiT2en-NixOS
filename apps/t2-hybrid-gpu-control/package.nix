@@ -7,7 +7,8 @@
 # The NixOS module therefore defines no units and, when the hybrid profile is
 # selected, ensures the dgpu units are absent.
 #
-# The helpers use awk + systemctl and write efivars/vgaswitcheroo. polkit
+# The helpers use awk + systemctl + chattr (e2fsprogs; toggles the efivar's
+# immutable bit) and write efivars/vgaswitcheroo. polkit
 # exec.path triangulation + wordmark are rewritten to this $out — see
 # ../../nix/lib/kait2en-polkit.nix.
 {
@@ -21,6 +22,7 @@
   gawk,
   systemd,
   coreutils,
+  e2fsprogs,
   branding,
 }:
 
@@ -67,6 +69,7 @@ rustPlatform.buildRustPackage {
             gawk
             systemd
             coreutils
+            e2fsprogs
           ]
         }
     done

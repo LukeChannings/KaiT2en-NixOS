@@ -6,8 +6,9 @@
 # The helpers write /sys/firmware/efi/efivars/gpu-power-prefs-* (efivars must be
 # writable) and /sys/kernel/debug/vgaswitcheroo/switch (debugfs, mounted by
 # default on NixOS), and toggle systemd units. They are #!/usr/bin/env bash and
-# use awk + systemctl, so are wrapped with bash, awk and systemd on PATH (systemd
-# units run with a minimal PATH that lacks bash).
+# use awk + systemctl + chattr, so are wrapped with bash, awk, systemd and
+# e2fsprogs (chattr toggles the efivar's immutable bit) on PATH (systemd units
+# run with a minimal PATH that lacks bash).
 #
 # The four systemd units (kait2en-dgpu-off/-suspend/-amdgpu-profile/-resume) are
 # NOT installed from the shipped files — they hardcode /usr/local/libexec. The
@@ -28,6 +29,7 @@
   gawk,
   systemd,
   coreutils,
+  e2fsprogs,
   branding,
 }:
 
@@ -75,6 +77,7 @@ rustPlatform.buildRustPackage {
             gawk
             systemd
             coreutils
+            e2fsprogs
           ]
         }
     done
