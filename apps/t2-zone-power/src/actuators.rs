@@ -2,11 +2,12 @@
 
 use std::{
     cell::Cell,
+    io::ErrorKind,
     path::{Path, PathBuf},
 };
 
 use crate::{
-    error::Result,
+    error::{Result, ZonePowerError},
     sysfs::{glob_paths, read_string, read_value, write_value},
 };
 
@@ -39,14 +40,25 @@ impl CpuCap {
             .max(self.min_khz)
     }
 
+    /// One busy policy must not leave the others uncapped: EBUSY (CPU
+    /// hotplug on suspend entry) is dropped since the next tick retries,
+    /// and other errors surface only after every policy was attempted.
     pub fn apply(&self, khz: u32) -> Result<()> {
+        let mut first_error = None;
         for policy in &self.policies {
             let path = policy.join("scaling_max_freq");
-            if read_value::<u32>(&path).ok() != Some(khz) {
-                write_value(&path, khz)?;
+            if read_value::<u32>(&path).ok() == Some(khz) {
+                continue;
+            }
+            match write_value(&path, khz) {
+                Ok(()) => {}
+                Err(ZonePowerError::Io { source, .. }) if source.kind() == ErrorKind::ResourceBusy => {}
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
             }
         }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 
     pub fn restore(&self) -> Result<()> {
