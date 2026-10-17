@@ -1,4 +1,4 @@
-# The KaiT2en kernel: stock Linux 7.0 plus the minimal patch the out-of-tree
+# The KaiT2en kernel: the Fedora-matched base kernel plus the minimal patch the out-of-tree
 # T2 HID drivers need to build.
 #
 # Background. KaiT2en's `hid_t2magicmouse` and `t2touchbar/t2hid` are the
@@ -10,7 +10,7 @@
 #   * enum hid_type { … HID_TYPE_SPI_KEYBOARD, HID_TYPE_SPI_MOUSE }
 #   * #define HID_SPI_DEVICE(ven, prod)
 #
-# Stock nixpkgs `linux_7_0` ships neither, so those modules fail to compile
+# Stock nixpkgs kernels ship neither, so those modules fail to compile
 # against it (the SPI/HOST branches are dead code on a T2 Mac, but the symbols
 # still have to resolve).
 #
@@ -38,7 +38,7 @@
 }:
 
 let
-  baseKernel = pkgs.linux_7_0; # ← kernel bumps touch only this line
+  baseKernel = pkgs.linux_7_2; # ← kernel bumps touch only this line
 
   # Content-address the patch by its own bytes, NOT as a subpath of the flake
   # source. When KaiT2en is consumed as a `path:`/git flake input, every file in
