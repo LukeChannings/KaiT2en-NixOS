@@ -15,28 +15,26 @@ SMC auto on termination itself (look for a SIGTERM handler or
 Re-check every sync.
 
 diff --git a/src/control.rs b/src/control.rs
-index 94ab510..1507169 100644
+index c94c597..74e4d47 100644
 --- a/src/control.rs
 +++ b/src/control.rs
-@@ -82,9 +82,15 @@ impl Controller {
-             let should_apply = should_apply_target(self.last_applied_percent, target_percent);
+@@ -178,7 +178,13 @@ impl Controller {
  
-             for fan in fans {
-+                // Failsafe: a missing target means we have no usable temperature
-+                // reading (sensor read failed / not yet sampled). Once we have
-+                // taken the fans out of SMC auto we own cooling, so an unknown
-+                // temperature must drive them to MAX, never min — running a
-+                // sensorless fan at minimum is how the package reaches Tjmax and
-+                // the platform force-suspends.
-                 let rpm = target_percent
-                     .map(|percent| fan.percent_to_rpm(percent))
--                    .unwrap_or(fan.min_speed);
-+                    .unwrap_or(fan.max_speed);
- 
-                 if should_apply {
-                     fan.set_target_speed(rpm)?;
+     fn apply(&mut self, fans: &mut [FanEndpoint], percent: Option<u8>) -> Result<()> {
+         for fan in fans {
+-            let rpm = percent.map(|percent| fan.percent_to_rpm(percent)).unwrap_or(fan.min_speed);
++            // Failsafe: a missing target means we have no usable temperature
++            // reading (sensor read failed / not yet sampled). Once we have
++            // taken the fans out of SMC auto we own cooling, so an unknown
++            // temperature must drive them to MAX, never min — running a
++            // sensorless fan at minimum is how the package reaches Tjmax and
++            // the platform force-suspends.
++            let rpm = percent.map(|percent| fan.percent_to_rpm(percent)).unwrap_or(fan.max_speed);
+             fan.set_target_speed(rpm)?;
+             fan.current_speed = Some(rpm);
+             fan.app_controlled = Some(true);
 diff --git a/src/main.rs b/src/main.rs
-index 7fae299..47726de 100644
+index f06469a..448d6a2 100644
 --- a/src/main.rs
 +++ b/src/main.rs
 @@ -30,7 +30,7 @@ use gtk4::{
@@ -48,7 +46,7 @@ index 7fae299..47726de 100644
  use sysfs::{discover_fans, discover_temperature_sources, FanEndpoint, TemperatureSnapshot, TemperatureSource};
  
  fn kait2en_brand() -> DrawingArea {
-@@ -337,6 +337,19 @@ impl AppModel {
+@@ -343,6 +343,19 @@ impl AppModel {
  }
  
  fn main() -> glib::ExitCode {
@@ -68,7 +66,7 @@ index 7fae299..47726de 100644
      if std::env::args().any(|arg| arg == "--daemon") {
          if let Err(error) = daemon_main() {
              eprintln!("{error}");
-@@ -354,6 +367,14 @@ fn main() -> glib::ExitCode {
+@@ -360,6 +373,14 @@ fn main() -> glib::ExitCode {
      app.run()
  }
  
@@ -83,7 +81,7 @@ index 7fae299..47726de 100644
  fn daemon_main() -> error::Result<()> {
      let listener = ipc::bind_listener()?;
      let (connections_tx, connections_rx) = mpsc::channel();
-@@ -369,9 +390,37 @@ fn daemon_main() -> error::Result<()> {
+@@ -375,9 +396,37 @@ fn daemon_main() -> error::Result<()> {
              source,
          }
      })?;
@@ -121,7 +119,7 @@ index 7fae299..47726de 100644
          if reload_requested.swap(false, Ordering::Relaxed) {
              runtime.reload_config()?;
          }
-@@ -483,6 +532,17 @@ impl DaemonRuntime {
+@@ -497,6 +546,17 @@ impl DaemonRuntime {
          }
      }
  
