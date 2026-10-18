@@ -22,7 +22,7 @@
 { ... }:
 
 {
-  imports = [ ../modules ];
+  imports = [ ./default.nix ];
 
   hardware.kait2en = {
     enable = true;

@@ -20,6 +20,19 @@
 # AMD render node and wake the dGPU on every GTK app start). Upstream's
 # `flatpak override --system --env=GSK_RENDERER=ngl` is not mirrored.
 #
+# hybrid's runtime-PM enablement is a one-shot runtime action in the app's
+# helper (`enable-hybrid` writes power/control=auto, state in /run) and does
+# not survive a reboot, so `hybridAtBoot` (default on) applies that half
+# declaratively: a udev rule sets the AMD dGPU's power/control to `auto` on
+# add, and the iGPU (always pci-0000:00:02.0 on these Intel Macs) is tagged as
+# mutter's preferred primary render GPU so the desktop renders on the GPU that
+# scans out instead of reverse-PRIMEing every frame off the dGPU (~16 W at
+# idle for nothing). switcherooControl adds per-app PRIME offload on top
+# (GNOME's "Launch using Discrete Graphics Card" / `switcherooctl launch`).
+# The EFI gpu-power-prefs boot-GPU choice stays with the app's
+# enable-hybrid/use-discrete; turn hybridAtBoot off if you boot on the
+# discrete GPU.
+#
 # dgpu units: the app toggles four units via `systemctl enable/disable`. NixOS
 # owns unit files declaratively, so we define them natively (exact names +
 # semantics: ConditionPathExists, before/after, sleep.target ExecStop) pointing
@@ -86,6 +99,19 @@ in
       description = "The t2-dgpu-control package.";
     };
 
+    hybridAtBoot = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        (hybrid mode) Declaratively apply at boot what the app's "Enable hybrid
+        graphics" applies at runtime: allow the dGPU to autosuspend
+        (`power/control=auto`, reaching D3cold via the gpu-runtime-pm amdgpu's
+        GMUX callbacks) and tag the iGPU as mutter's preferred primary render
+        GPU, plus switcherooControl for per-app PRIME offload. Disable if you
+        boot on the discrete GPU (gpu-power-prefs set to discrete).
+      '';
+    };
+
     hybridPackage = lib.mkOption {
       type = lib.types.package;
       default = pkgs.callPackage ../../../apps/t2-hybrid-gpu-control/package.nix { inherit branding; };
@@ -104,6 +130,18 @@ in
       environment.systemPackages = [ cfg.hybridPackage ];
       environment.etc."environment.d/90-kait2en-gsk-renderer.conf".source =
         ../../../apps/t2-hybrid-gpu-control/contrib/90-kait2en-gsk-renderer.conf;
+    })
+
+    (lib.mkIf (cfg.mode == "hybrid" && cfg.hybridAtBoot) {
+      # The iGPU is matched by stable PCI path, not card index (which races);
+      # the mutter tag name is read by libmutter
+      # (udev_device_get_property "mutter-device-preferred-primary").
+      services.udev.extraRules = ''
+        SUBSYSTEM=="drm", KERNEL=="card[0-9]*", ENV{ID_PATH}=="pci-0000:00:02.0", TAG+="mutter-device-preferred-primary"
+        ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x1002", ATTR{class}=="0x030000", ATTR{power/control}="auto"
+      '';
+
+      services.switcherooControl.enable = lib.mkDefault true;
     })
 
     (lib.mkIf (cfg.mode == "dgpu") {
