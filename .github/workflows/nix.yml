@@ -6,13 +6,15 @@
 # repo settings rather than deleted so upstream merges never conflict here.
 #
 # What it does:
-#   * PRs + pushes to main: `nix flake check` — the complete build gate
-#     (patched kernel, every out-of-tree module, every app, and the three
-#     per-profile NixOS toplevels; see `checks` in flake.nix).
-#   * Then pushes everything built to the niks3 binary cache at
-#     https://nix.channings.me so hardware smoke tests and consumers
-#     (hartlandia) substitute instead of rebuilding — a sync-PR kernel is
-#     built once, here.
+#   * PRs + pushes to main: `nix-build` the three per-profile NixOS
+#     configurations' toplevels — the complete build gate. Each toplevel
+#     pulls in the whole stack (patched kernel, every out-of-tree module,
+#     every app; see `nixosConfigurations` in flake.nix), so building them
+#     proves the stack still builds.
+#   * Then pushes the built toplevels (and their closures) to the niks3
+#     binary cache at https://nix.channings.me so hardware smoke tests and
+#     consumers (hartlandia) substitute instead of rebuilding — a sync-PR
+#     kernel is built once, here.
 #
 # Secrets:
 #   NIKS3_AUTH_TOKEN — upload token for nix.channings.me (niks3 signs
@@ -30,6 +32,7 @@ concurrency:
 
 jobs:
   check:
+    name: Build NixOS
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
@@ -53,25 +56,39 @@ jobs:
             extra-substituters = https://nix.channings.me
             extra-trusted-public-keys = garage:JZet/fsItH8cJ6SKLci1+BuMIQGDfZSa/8GxGpKcxss=
 
-      - name: Build gate (nix flake check)
-        run: nix flake check -L
+      - name: Build gate (nix-build nixosConfigurations)
+        # Enumerate the per-profile configs from the flake, then nix-build
+        # each toplevel (via the default.nix flake-compat shim). The store
+        # paths land in $RUNNER_TEMP/nixos-paths for the push step.
+        run: |
+          mapfile -t names < <(nix eval --json '.#nixosConfigurations' \
+            --apply builtins.attrNames | nix run nixpkgs#jq -- -r '.[]')
+          args=()
+          for name in "${names[@]}"; do
+            attr="nixosConfigurations.${name}.config.system.build.toplevel"
+            args+=(-A "$attr")
+          done
+          nix-build --no-out-link "${args[@]}" | tee "$RUNNER_TEMP/nixos-paths"
 
-      - name: Push to nix.channings.me (niks3)
+      - name: Push to cache
         # Pushes on PRs too, so the sync-branch kernel is cached before the
-        # hardware smoke test. Collect every check's out paths and push their
-        # closure. Verify the client invocation against the deployed niks3
-        # version if this step fails.
-        if: ${{ github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'push' }}
+        # hardware smoke test. Push the built toplevels; niks3 walks and
+        # uploads their full closures. Verify the client invocation against
+        # the deployed niks3 version if this step fails.
+        if: >-
+          ${{ github.event.pull_request.head.repo.full_name == github.repository
+          || github.event_name == 'push' }}
         env:
+          # niks3 no longer reads NIKS3_AUTH_TOKEN; it wants the token in a
+          # file (--auth-token-path / NIKS3_AUTH_TOKEN_FILE). The server URL
+          # is passed via --server-url (was --server).
           NIKS3_AUTH_TOKEN: ${{ secrets.NIKS3_AUTH_TOKEN }}
         run: |
-          mapfile -t names < <(nix eval --json '.#checks.x86_64-linux' \
-            --apply builtins.attrNames | nix run nixpkgs#jq -- -r '.[]')
-          paths=()
-          for name in "${names[@]}"; do
-            mapfile -t out < <(nix build ".#checks.x86_64-linux.$name" --print-out-paths)
-            paths+=("${out[@]}")
-          done
+          token_file="$(mktemp)"
+          trap 'rm -f "$token_file"' EXIT
+          printf '%s' "$NIKS3_AUTH_TOKEN" > "$token_file"
+          mapfile -t paths < "$RUNNER_TEMP/nixos-paths"
           nix run github:Mic92/niks3 -- push \
-            --server https://nix.channings.me \
+            --server-url https://nix.channings.me \
+            --auth-token-path "$token_file" \
             "${paths[@]}"
