@@ -19,7 +19,7 @@
 #     services.t2-touchid.bindUser = "<you>"; to bind automatically).
 #   * The Touch Bar needs your user in the kait2en-touchbar group:
 #     services.t2-touchbar.users = [ "<you>" ];
-{ pkgs, ... }:
+{ ... }:
 
 {
   imports = [ ../modules ];
@@ -54,8 +54,7 @@
   services.t2-zone-power.enable = true;
   services.t2-force-click.enable = true;
 
-  # t2-journal has no system integration — just ship the CLI.
-  environment.systemPackages = [ (pkgs.callPackage ../../t2-services/t2-journal/package.nix { }) ];
+  services.t2-journal.enable = true;
 
   services.t2bce-audio-dsp = {
     enable = true;

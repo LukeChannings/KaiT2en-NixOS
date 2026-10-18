@@ -19,7 +19,7 @@
 #   * Touch ID: log into macOS once after a T2 power loss so the SEP unlocks,
 #     then bind your finger with `fprintd-enroll` (or set
 #     services.t2-touchid.bindUser = "<you>"; to bind automatically).
-{ pkgs, ... }:
+{ ... }:
 
 {
   imports = [ ../modules ];
@@ -49,8 +49,7 @@
   services.t2-zone-power.enable = true;
   services.t2-force-click.enable = true;
 
-  # t2-journal has no system integration — just ship the CLI.
-  environment.systemPackages = [ (pkgs.callPackage ../../t2-services/t2-journal/package.nix { }) ];
+  services.t2-journal.enable = true;
 
   services.t2bce-audio-dsp = {
     enable = true;

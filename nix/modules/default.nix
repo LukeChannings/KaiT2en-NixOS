@@ -3,7 +3,7 @@
 # `hardware.kait2en.firmware` (declarative Wi-Fi/Bluetooth firmware) and
 # `hardware.kait2en.gpuControl` (model-exclusive GPU app) options plus the
 # `services.{t2-fan-control,t2-smc-control,t2-touchbar,t2bce-audio-dsp,
-# kait2en-suspend,kait2en-rtc-sync,t2-services,t2-ave,t2-touchid,
+# kait2en-suspend,kait2en-rtc-sync,t2-services,t2-ave,t2-touchid,t2-journal,
 # t2-power-explorer,t2-power-tune,t2-zone-power,t2-force-click}` options; each
 # leaves itself disabled until you set its `enable = true`.
 {

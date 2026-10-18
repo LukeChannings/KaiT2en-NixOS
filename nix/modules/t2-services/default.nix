@@ -29,6 +29,9 @@
 # /etc/kait2en/t2-touchid.conf (generated from options). fprintd itself comes
 # from services.fprintd, whose PAM integration replaces the installer's
 # "enable-pam" step. The SELinux policy is Fedora-only.
+#
+# ── t2-journal (services.t2-journal) ───────────────────────────────────────
+# The `t2journal` CLI only; it has no system integration beyond the link.
 {
   config,
   lib,
@@ -40,6 +43,7 @@ let
   cfg = config.services.t2-services;
   aveCfg = config.services.t2-ave;
   touchidCfg = config.services.t2-touchid;
+  journalCfg = config.services.t2-journal;
 
   sharedSrc = ../../../t2-services/shared/integration;
 
@@ -140,12 +144,24 @@ in
         description = "BiometricKit match flags (`T2_TOUCHID_FLAGS`); 0 = plain verify.";
       };
     };
+
+    services.t2-journal = {
+      enable = lib.mkEnableOption "the T2 bridgeOS log reader, `t2journal`";
+      package = lib.mkOption {
+        type = lib.types.package;
+        default = pkgs.callPackage ../../../t2-services/t2-journal/package.nix { };
+        defaultText = lib.literalExpression "pkgs.callPackage ../../../t2-services/t2-journal/package.nix { }";
+        description = "The t2-journal package providing `t2journal`.";
+      };
+    };
   };
 
   config = lib.mkMerge [
     {
       # Both services reach bridgeOS over the shared link.
-      services.t2-services.enable = lib.mkIf (aveCfg.enable || touchidCfg.enable) (lib.mkDefault true);
+      services.t2-services.enable = lib.mkIf (aveCfg.enable || touchidCfg.enable || journalCfg.enable) (
+        lib.mkDefault true
+      );
     }
 
     (lib.mkIf cfg.enable {
@@ -215,7 +231,13 @@ in
       };
     })
 
+    (lib.mkIf journalCfg.enable {
+      environment.systemPackages = [ journalCfg.package ];
+    })
+
     (lib.mkIf touchidCfg.enable {
+      environment.systemPackages = [ touchidCfg.package ];
+
       environment.etc."kait2en/t2-touchid.conf".source = touchidConfig;
 
       services.dbus.packages = [ touchidCfg.package ];
