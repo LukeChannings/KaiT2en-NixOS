@@ -23,6 +23,13 @@
 # `pkgs.linuxPackagesFor` to get a kernelPackages set for
 # `boot.kernelPackages`, and build the T2 modules against `kait2enKernel`
 # itself (see ../../modules and ../../modules/kait2en-kernel).
+#
+# Config. `t2bce_ave` (in the t2bce stack) is a V4L2 mem2mem encoder and links
+# against the kernel's `v4l2-mem2mem` helper (CONFIG_V4L2_MEM2MEM_DEV). That
+# symbol has no prompt — it only exists when a driver selects it — and stock
+# nixpkgs selects none, so modpost fails with undefined `v4l2_m2m_*`. Mirror
+# upstream's apps/t2-kernel-builder/engine/build.sh: keep VIDEO_VIM2M as a
+# module purely as the selecting driver.
 # Kernel selection policy: match the kernel series Fedora stable currently
 # ships (upstream KaiT2en targets Fedora's kernel; their modules often need
 # compat fixes before a newer series works). Bump `baseKernel` below — the
@@ -61,6 +68,15 @@ baseKernel.override {
     {
       name = "kait2en-hid-spi-device-types";
       patch = hidSpiDeviceTypesPatch;
+    }
+    {
+      name = "kait2en-t2bce-ave-v4l2-mem2mem";
+      patch = null;
+      structuredExtraConfig = with pkgs.lib.kernel; {
+        MEDIA_TEST_SUPPORT = yes;
+        V4L_TEST_DRIVERS = yes;
+        VIDEO_VIM2M = module; # selects V4L2_MEM2MEM_DEV for t2bce_ave
+      };
     }
   ];
 }
