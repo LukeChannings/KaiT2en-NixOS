@@ -14,7 +14,9 @@
 #   * Then pushes the built toplevels (and their closures) to the niks3
 #     binary cache at https://nix.channings.me so hardware smoke tests and
 #     consumers (hartlandia) substitute instead of rebuilding — a sync-PR
-#     kernel is built once, here.
+#     kernel is built once, here. The kernel's `dev` output is pushed too:
+#     it is build-time only, so no toplevel closure carries it, yet any
+#     consumer building an extra out-of-tree module (e.g. ZFS) needs it.
 #
 # Secrets:
 #   NIKS3_CI_TOKEN — the Kanidm CI service-account API token. The push step
@@ -64,12 +66,13 @@ jobs:
 
       - name: Build gate (nix-build nixosConfigurations)
         # Enumerate the per-profile configs from the flake, then nix-build
-        # each toplevel (via the default.nix flake-compat shim). The store
-        # paths land in $RUNNER_TEMP/nixos-paths for the push step.
+        # each toplevel (via the default.nix flake-compat shim), plus the
+        # kernel's dev output. The store paths land in
+        # $RUNNER_TEMP/nixos-paths for the push step.
         run: |
           mapfile -t names < <(nix eval --json '.#nixosConfigurations' \
             --apply builtins.attrNames | nix run nixpkgs#jq -- -r '.[]')
-          args=()
+          args=(-A packages.x86_64-linux.kernel.dev)
           for name in "${names[@]}"; do
             attr="nixosConfigurations.${name}.config.system.build.toplevel"
             args+=(-A "$attr")
