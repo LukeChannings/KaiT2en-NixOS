@@ -42,6 +42,19 @@ stdenv.mkDerivation {
 
   src = lib.cleanSource ./.;
 
+  # Deliberate divergence from upstream, kept as a patch so `src` stays
+  # byte-identical to super/main and upstream merges can take "theirs"
+  # unconditionally. The patch header records its drop condition; re-check it
+  # every upstream sync (see .agents/skills/sync-upstream/SKILL.md).
+  # builtins.path content-addresses the patch by its own bytes so unrelated
+  # repo edits don't rebuild the package when consumed as a flake input.
+  patches = [
+    (builtins.path {
+      name = "t2-power-tune-vhci-exclude.patch";
+      path = ../../patches/nixos/t2-power-tune-vhci-exclude.patch;
+    })
+  ];
+
   nativeBuildInputs = [
     wrapGAppsHook4
     gobject-introspection
