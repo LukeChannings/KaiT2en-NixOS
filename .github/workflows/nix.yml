@@ -49,12 +49,15 @@ jobs:
           sudo docker image prune --all --force || true
           df -h /
 
+      # The public key can't be wrapped inside nix.conf.
+      # yamllint disable rule:line-length
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v16
         with:
           extra-conf: |
             extra-substituters = https://nix.channings.me
             extra-trusted-public-keys = garage:JZet/fsItH8cJ6SKLci1+BuMIQGDfZSa/8GxGpKcxss=
+      # yamllint enable rule:line-length
 
       - name: Build gate (nix-build nixosConfigurations)
         # Enumerate the per-profile configs from the flake, then nix-build
@@ -84,6 +87,10 @@ jobs:
           # is passed via --server-url (was --server).
           NIKS3_AUTH_TOKEN: ${{ secrets.NIKS3_AUTH_TOKEN }}
         run: |
+          if [ -z "$NIKS3_AUTH_TOKEN" ]; then
+            echo "::error::NIKS3_AUTH_TOKEN secret is empty or not set"
+            exit 1
+          fi
           token_file="$(mktemp)"
           trap 'rm -f "$token_file"' EXIT
           printf '%s' "$NIKS3_AUTH_TOKEN" > "$token_file"
