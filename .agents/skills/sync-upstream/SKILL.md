@@ -295,7 +295,8 @@ upstream `.github/**`, `PLAN.md`, docs, `LICENSE*`/`LICENSING.md`/`AUTHORS`/
 
 | Patch | Drop condition |
 |---|---|
-| `patches/nixos/t2-fan-control-release-failsafe.patch` (rebased onto upstream's reworked `control.rs` in the 2026-10-17 sync) | upstream releases fans to SMC auto on daemon termination (SIGTERM handler or `--release`/ExecStopPost equivalent) |
+| `patches/nixos/t2-fan-control-release-failsafe.patch` (rebased onto upstream's reworked `control.rs` in the 2026-10-17 sync; rebased again in the 2026-10-19 sync for the native-SMC switch — upstream now releases at *startup* in native mode, not on termination). Its `--release` relies on t2smc treating `fanN_target=0` as hand-back (upstream `513a82d`); with older t2smc that write latched the fan in manual mode at 0 rpm | upstream releases fans to SMC auto on daemon termination (SIGTERM handler or `--release`/ExecStopPost equivalent) |
+| `patches/nixos/t2-power-tune-vhci-exclude.patch` (added in the 2026-10-19 sync; was the in-tree edit `92d2a1b`) | upstream's `t2-power-tune-helper` excludes `t2bce_vhci` devices from the wakeup/runtime-PM tunables in `scan()` and `validate()` |
 | `nix/pkgs/kernel/patches/0001-hid-add-spi-hid-device-types-and-macro.patch` (kernel ABI, not app) | `HID_SPI_DEVICE` + SPI `hid_type` members land in the in-tree `include/linux/hid.h` |
 
 (`patches/runtime/gpu-runtime-pm` is upstream's own series, consumed via the
@@ -303,8 +304,8 @@ GPU row, not a divergence.)
 
 ## Known blockers
 
-- **Gate not run locally (2026-10-17 sync)**: the dev machine cannot take
-  heavy builds; only eval (`drvPath`s of every package + the three
+- **Gate not run locally (2026-10-17 and 2026-10-19 syncs)**: the dev machine
+  cannot take heavy builds; only eval (`drvPath`s of every package + the three
   `check-*` toplevels) was verified. CI's `nix flake check` is the gate —
   in particular the new out-of-tree amdgpu (`gpu-runtime-pm`) and `t2-dsp`
   have never been built.

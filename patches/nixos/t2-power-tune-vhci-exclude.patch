@@ -1,0 +1,61 @@
+KaiT2en-NixOS divergence: t2-power-tune never touches T2 vhci devices.
+
+The wakeup and runtime-PM scan lists the devices behind t2bce_vhci
+(internal keyboard, trackpad, Touch Bar, the T2 NCM link). Disabling
+wakeup there removes the machine's ability to wake itself: the next
+sleep is recoverable only by plugging in AC, whose ACPI event still
+wakes the SoC. Excluded at scan time, in the saved-state filter, and
+in validate() so the pkexec-ed helper also refuses them from stale or
+crafted state. (Originally landed in-tree as 92d2a1b; moved here so
+apps/ stays byte-identical to upstream.)
+
+Applied by apps/t2-power-tune/package.nix on top of the upstream
+source (-p1 relative to apps/t2-power-tune).
+
+Drop condition: remove when upstream t2-power-tune-helper excludes
+t2bce_vhci devices (or all T2-internal devices) from the wakeup and
+runtime-PM tunables, in scan() and validate(). Re-check every sync.
+
+diff --git a/t2-power-tune-helper b/t2-power-tune-helper
+index 1910e3d..38ccc4e 100755
+--- a/t2-power-tune-helper
++++ b/t2-power-tune-helper
+@@ -53,6 +53,10 @@ def tunable_label(path):
+     if match:
+         return f"USB device {match.group(1)} wakeup"
+     return runtime_label(path)
++def t2_internal(path):
++    # The T2's vhci devices carry the machine's wake and input events; tuning
++    # their power knobs can leave a sleep that only AC power recovers from.
++    return "t2bce_vhci" in os.path.realpath(path)
+ def tunable_group(path):
+     if path.endswith("/power/wakeup"): return "wakeup"
+     return "runtime" if re.fullmatch(r"/sys/bus/(usb|pci)/devices/[^/]+/power/control", path) else "other"
+@@ -223,6 +227,7 @@ def scan():
+         canonical = os.path.realpath(path)
+         if canonical in seen_tunables: continue
+         seen_tunables.add(canonical)
++        if "t2bce_vhci" in canonical: continue
+         if os.path.isfile(path) and os.access(path, os.R_OK | os.W_OK):
+             current = read(path)
+             if current != target:
+@@ -243,7 +248,9 @@ def scan():
+                            if isinstance(item, dict)
+                            and item.get("kind") != "l1ss"
+                            and not re.fullmatch(r"/sys/bus/pci/devices/[^/]+/power/wakeup",
+-                                                str(item.get("id", "")))]
++                                                str(item.get("id", "")))
++                           and not (item.get("kind") == "tunable"
++                                    and t2_internal(str(item.get("id", ""))))]
+         saved = validate(filtered_source)
+         if runtime_exists and len(filtered_source) != len(source):
+             save_runtime_items(saved)
+@@ -297,7 +304,7 @@ def validate(raw):
+             runtime = re.fullmatch(r"/sys/bus/(usb|pci)/devices/[^/]+/power/control", ident)
+             wakeup = (re.fullmatch(r"/sys/class/net/[^/]+/device/power/wakeup", ident)
+                       or re.fullmatch(r"/sys/bus/usb/devices/[^/]+/power/wakeup", ident))
+-            allowed = ident in fixed or runtime or wakeup
++            allowed = (ident in fixed or runtime or wakeup) and not t2_internal(ident)
+             expected = fixed.get(ident, "disabled" if wakeup else "auto")
+             if ident in fixed: valid_original = re.fullmatch(r"[0-9]+", original)
+             elif wakeup: valid_original = original in ("enabled", "disabled")

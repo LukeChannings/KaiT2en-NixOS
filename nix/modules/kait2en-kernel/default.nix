@@ -302,8 +302,10 @@ in
       "i915.enable_guc=2"
       "intel_iommu=on"
       "iommu=pt"
-      # pm_async=off was dropped upstream ("kernel-args: remove pm_async=off")
-      # once t2bce fixed async PM; pci=noaer was dropped as well.
+      # Upstream dropped pm_async=off once t2bce fixed async PM, then restored
+      # it because brcmfmac refuses to suspend async (b53cacd). pci=noaer stays
+      # dropped.
+      "pm_async=off"
       "brcmfmac.p2pon=0"
       "pcie_ports=compat"
       "mem_sleep_default=deep"
