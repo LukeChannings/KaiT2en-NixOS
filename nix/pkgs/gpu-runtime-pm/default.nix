@@ -19,10 +19,14 @@
 #
 # The patch dir is content-addressed on its own (builtins.path), so unrelated
 # repo edits do not rebuild the module.
+#
+# The module is signed with kmodigest in postFixup so `aggregateModules` finds
+# its `amdgpu.ko.cer` — see "Signing" in ../../kernel-module.nix.
 {
   lib,
   stdenv,
   kmod,
+  kmodigest,
   kernel,
 }:
 
@@ -56,7 +60,10 @@ stdenv.mkDerivation {
 
   inherit (kernel) src;
 
-  nativeBuildInputs = kernel.moduleBuildDependencies ++ [ kmod ];
+  nativeBuildInputs = kernel.moduleBuildDependencies ++ [
+    kmod
+    kmodigest
+  ];
 
   hardeningDisable = [
     "pic"
@@ -107,6 +114,11 @@ stdenv.mkDerivation {
     install -Dm644 ${amdgpuDir}/amdgpu.ko \
       "$out/lib/modules/${modDirVersion}/updates/kait2en-gpu-runtime-pm/amdgpu.ko"
     runHook postInstall
+  '';
+
+  # After the strip pass, which would drop the appended signature.
+  postFixup = ''
+    kmodigest "$out/lib/modules/${modDirVersion}/updates/kait2en-gpu-runtime-pm/amdgpu.ko"
   '';
 
   meta = {

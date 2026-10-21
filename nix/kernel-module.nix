@@ -7,10 +7,22 @@
 # we only invoke the build and then collect the produced `.ko` files ourselves
 # into `$out/lib/modules/<modDirVersion>/misc/`, the layout NixOS'
 # `boot.extraModulePackages` expects.
+#
+# Signing. nixpkgs builds kernels with MODULE_SIG=y and kmodigest
+# deterministic single-module signatures (nixpkgs#571181), and
+# `aggregateModules` (the NixOS `linux-<ver>-modules` derivation) concatenates
+# a `<module>.ko.cer` for every external module into `modules.cer` — it fails
+# hard if one is missing. In-tree and `modules_install`-based external modules
+# get this from the `cmd_sign=kmodigest` override in `kernel.moduleMakeFlags`;
+# we don't run `modules_install`, so we run kmodigest ourselves. It must run in
+# postFixup, *after* stdenv's strip pass: `strip` rewrites the ELF and drops
+# the appended signature (nixpkgs' own modules escape that only because they
+# are already `.ko.xz` by then).
 {
   lib,
   stdenv,
   kmod,
+  kmodigest,
   kernel,
 }:
 
@@ -42,7 +54,13 @@ in
 stdenv.mkDerivation {
   inherit pname version src;
 
-  nativeBuildInputs = kernel.moduleBuildDependencies ++ [ kmod ] ++ nativeBuildInputs;
+  nativeBuildInputs =
+    kernel.moduleBuildDependencies
+    ++ [
+      kmod
+      kmodigest
+    ]
+    ++ nativeBuildInputs;
 
   # Out-of-tree modules build against the kernel's own (already hardened)
   # flags; the default userspace hardening flags break the kbuild.
@@ -101,6 +119,11 @@ stdenv.mkDerivation {
     fi
 
     runHook postInstall
+  '';
+
+  # See "Signing" above: sign (in place) and emit `<module>.ko.cer`.
+  postFixup = ''
+    find "$out/lib/modules" -name '*.ko' -print0 | xargs -0 -r -n1 kmodigest
   '';
 
   meta = {

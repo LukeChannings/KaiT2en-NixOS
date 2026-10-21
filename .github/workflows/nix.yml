@@ -67,17 +67,28 @@ jobs:
       - name: Build gate (nix-build nixosConfigurations)
         # Enumerate the per-profile configs from the flake, then nix-build
         # each toplevel (via the default.nix flake-compat shim), plus the
-        # kernel's dev output. The store paths land in
-        # $RUNNER_TEMP/nixos-paths for the push step.
+        # kernel (all outputs, incl. the build-time-only `dev`).
+        #
+        # The target output paths are recorded in $RUNNER_TEMP/nixos-paths
+        # BEFORE building, and the build runs --keep-going, so when one target
+        # fails the push step can still cache everything that did build —
+        # above all the ~2h kernel, so the fix-up run doesn't rebuild it.
+        # (Previously `nix-build | tee` masked a failed build: the step's
+        # `bash -e` has no pipefail, so tee's exit 0 won and the push step
+        # got an empty path list.)
         run: |
+          set -o pipefail
           mapfile -t names < <(nix eval --json '.#nixosConfigurations' \
             --apply builtins.attrNames | nix run nixpkgs#jq -- -r '.[]')
-          args=(-A packages.x86_64-linux.kernel.dev)
+          args=(-A packages.x86_64-linux.kernel)
           for name in "${names[@]}"; do
             attr="nixosConfigurations.${name}.config.system.build.toplevel"
             args+=(-A "$attr")
           done
-          nix-build --no-out-link "${args[@]}" | tee "$RUNNER_TEMP/nixos-paths"
+          mapfile -t drvs < <(nix-instantiate "${args[@]}")
+          nix-store --query --outputs "${drvs[@]}" > "$RUNNER_TEMP/nixos-paths"
+          cat "$RUNNER_TEMP/nixos-paths"
+          nix-build --no-out-link --keep-going "${args[@]}"
 
       # The refresher heredoc carries an irreducible OIDC URN and jq filter.
       # yamllint disable rule:line-length
@@ -86,9 +97,14 @@ jobs:
         # hardware smoke test. Push the built toplevels; niks3 walks and
         # uploads their full closures. Verify the client invocation against
         # the deployed niks3 version if this step fails.
+        #
+        # Runs even when the build step failed (but not on cancel), pushing
+        # only the targets that were realised — see the build step. The job
+        # still fails via the build step.
         if: >-
-          ${{ github.event.pull_request.head.repo.full_name == github.repository
-          || github.event_name == 'push' }}
+          !cancelled()
+          && (github.event.pull_request.head.repo.full_name == github.repository
+          || github.event_name == 'push')
         env:
           # Per ADR-0010, CI authenticates to niks3 via OIDC: a long-lived
           # Kanidm service-account token, exchanged (RFC 8693) for a
@@ -103,7 +119,21 @@ jobs:
             echo "::error::NIKS3_CI_TOKEN secret is empty or not set"
             exit 1
           fi
-          mapfile -t paths < "$RUNNER_TEMP/nixos-paths"
+          paths=()
+          if [ -f "$RUNNER_TEMP/nixos-paths" ]; then
+            while IFS= read -r p; do
+              if nix-store --check-validity "$p" 2>/dev/null; then
+                paths+=("$p")
+              else
+                echo "not built, skipping: $p"
+              fi
+            done < "$RUNNER_TEMP/nixos-paths"
+          fi
+          if [ "${#paths[@]}" -eq 0 ]; then
+            echo "::warning::No built store paths to push"
+            exit 0
+          fi
+          printf 'pushing: %s\n' "${paths[@]}"
           # Seed the Kanidm CI token + a refresher that exchanges it (RFC 8693)
           # at the Kanidm token endpoint for an aud=niks3 OIDC token. niks3's
           # provider grants `write` to any aud=niks3 token, and only niks3_ci
