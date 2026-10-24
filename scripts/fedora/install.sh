@@ -55,6 +55,9 @@ install_multicall() {
 	install -o root -g root -m 0755 "$SCRIPT_DIR/kait2en-multicall" /usr/local/bin/kait2en-multicall
 	ln -sfn kait2en-multicall /usr/local/bin/edit-grub
 	ln -sfn kait2en-multicall /usr/local/bin/update-grub
+	ln -sfn kait2en-multicall /usr/local/bin/boot-macos
+	ln -sfn kait2en-multicall /usr/local/bin/update-modules
+	ln -sfn kait2en-multicall /usr/local/bin/update-apps
 }
 run_step "install command helpers" install_multicall
 
@@ -62,6 +65,7 @@ STEPS=(
 	install-dependencies.sh
 	install-kernel-args.sh
 	install-dkms-modules.sh
+	install-macos-mount.sh
 	install-gpu-runtime-pm.sh
 	install-alsa-ucm.sh
 	install-dsp.sh

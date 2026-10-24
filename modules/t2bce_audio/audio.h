@@ -87,13 +87,17 @@ struct t2audio_stream {
 
     bool waiting_for_first_ts;
 
-    ktime_t remote_timestamp;
-    ktime_t timestamp_accept_after;
-    u64 last_device_timestamp;
-    u64 last_sample_frames;
+    u64 accept_after_ns;
+    u64 last_received_ns;
+    u64 anchor_ns;
     u64 sample_frames;
+    u64 sample_base;
     u64 reported_frames;
+    u64 sample_period;
     bool timeline_fault;
+    snd_pcm_uframes_t write_history[2];
+    u8 write_history_idx;
+    bool reset_zeroing;
     int started;
 
     struct t2audio_subdevice *sdev;
@@ -109,6 +113,7 @@ struct t2audio_subdevice {
     struct list_head list;
     t2audio_device_id_t dev_id;
     u32 in_latency, out_latency;
+    u32 in_safety_offset, out_safety_offset;
     u8 buf_id;
     int alsa_id;
     char uid[T2AUDIO_DEVICE_MAX_UID_LEN + 1];

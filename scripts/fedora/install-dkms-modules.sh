@@ -21,6 +21,7 @@ MODULES=(
 	t2thunderbolt
 	t2smp
 	t2sbs
+	linux-apfs-rw
 )
 
 LEGACY_MODULES=(
@@ -200,6 +201,9 @@ dkms_module_version_installed() {
 copy_module_source() {
 	local name=$1 src dst version
 	src="$REPO_ROOT/modules/$name"
+	if [[ "$name" == "linux-apfs-rw" ]]; then
+		src="$REPO_ROOT/third-party/linux-apfs-rw"
+	fi
 	[[ -f "$src/dkms.conf" ]] || fail "missing dkms.conf for $name"
 	version="$(sed -n 's/^PACKAGE_VERSION="\([^"]*\)".*/\1/p' "$src/dkms.conf")"
 	[[ -n "$version" ]] || fail "missing PACKAGE_VERSION in $src/dkms.conf"
@@ -221,10 +225,10 @@ copy_module_source() {
 
 	if [[ "$name" == "t2bce_stack" ]]; then
 		local component component_src
-		for component in t2bce_dma t2bce_core t2bce_vhci t2bce_audio t2bce_ave; do
+		for component in t2bce_dma t2bce_core t2bce_vhci t2bce_audio t2bce_ave t2bce_sidecar; do
 			component_src="$REPO_ROOT/modules/$component"
-			if [[ "$component" == t2bce_ave ]]; then
-				component_src="$REPO_ROOT/t2-services/t2-ave/kernel/t2bce_ave"
+			if [[ "$component" == t2bce_ave || "$component" == t2bce_sidecar ]]; then
+				component_src="$REPO_ROOT/t2-services/t2-ave/kernel/$component"
 			fi
 			info "staging $component in $dst"
 			install -d -o root -g root -m 0755 "$dst/$component"

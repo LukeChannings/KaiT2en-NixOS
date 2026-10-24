@@ -24,6 +24,23 @@ checkout with an unexpected Git remote. Its persistent files are:
 ~/.local/state/kait2en/install.log
 ```
 
+## Multicall commands
+
+`install.sh` installs a helper script and links the short commands to it. The
+command name selects the action, see [Multicall commands](../post-install/multicall-commands.md).
+
+```text
+/usr/local/bin/kait2en-multicall
+/usr/local/bin/edit-grub          -> kait2en-multicall
+/usr/local/bin/update-grub        -> kait2en-multicall
+/usr/local/bin/boot-macos         -> kait2en-multicall
+/usr/local/bin/update-modules     -> kait2en-multicall
+/usr/local/bin/update-apps        -> kait2en-multicall
+```
+
+`boot-macos` writes the EFI `BootNext` variable and `update-modules` and
+`update-apps` reset the checkout at `/usr/local/src/KaiT2en-Fedora`.
+
 ## Kernel modules
 
 The installer copies each DKMS source package to `/usr/src/<name>-<version>/`,
@@ -49,17 +66,15 @@ kernel updates. `modinfo -n <module>` prints the installed kernel object path.
 | `t2thunderbolt` | `t2thunderbolt` | Thunderbolt power-management ordering and T2 PCI quirks |
 | `t2smp` | `t2smp` | Defers secondary CPU hotplug to avoid firmware-sensitive resume delays |
 | `t2sbs` | `t2sbs` | Smart Battery driver that refreshes the full charge capacity and reports the charge relative to it, replaces `sbs` |
+| `linux-apfs-rw` | `apfs` | Read-only access to the macOS APFS container, vendored from upstream |
 
 The installer also writes
 `/etc/kernel/install.d/39-kait2en-dkms-cleanup.install`. The hook removes stale
 DKMS build state before a kernel installation is retried.
 
 On the MacBookPro15,1, MacBookPro16,1, MacBookPro16,4, iMac20,1 and iMac20,2,
-the installer also builds the AMDGPU module with the patches from
-`patches/runtime/gpu-runtime-pm` (hybrid runtime PM, 5K iMac panel support,
-the Navi 14 memory clock cap, the Apple Navi power limit range and a revert
-of the 7.2 ASPM host-link check)
-and installs it for the running kernel at:
+the installer also builds a patched AMDGPU module and installs it for the
+running kernel at:
 
 ```text
 /usr/lib/modules/<kernel>/updates/kait2en-gpu-runtime-pm/amdgpu.ko.xz
@@ -109,9 +124,7 @@ module_blacklist=acpi_tad,applesmc,macsmc,hid_apple,hid_appletb_bl,hid_appletb_k
 ```
 
 On iMacs and the iMac Pro, `pcie_aspm=force` is left out, because their
-Ethernet controllers do not work with forced ASPM. On the MacBookPro16,1,
-`amdgpu.aspm=1`, `pcie_aspm=force` and `pcie_aspm.policy=powersave` are left
-out while its Navi 14 drops off the PCIe bus under load.
+Ethernet controllers do not work with forced ASPM.
 
 On every T2 Mac, the installer enables HuC firmware loading for the Intel GPU:
 
@@ -164,6 +177,8 @@ audio behavior and diagnostics.
 | --- | --- |
 | `/etc/systemd/system/kait2en-suspend.service` | Calls the suspend helper before `sleep.target` and again after resume |
 | `/usr/local/libexec/kait2en/kait2en-suspend.sh` | Handles the BCM4377 suspend workaround described below |
+| `/etc/systemd/system/kait2en-macos-mount.service` | Mounts the readable macOS volumes read-only under `/media/macOS` at boot |
+| `/usr/local/libexec/kait2en/kait2en-macos-mount` | Finds the readable volumes in the internal APFS container and mounts them as subdirectories by role |
 | `/etc/systemd/system/t2-services-suspend.service` | Runs feature sleep/resume hooks around sleep |
 | `/usr/local/libexec/t2-services/t2-ncm-sleep` | Runs installed feature hooks before sleep and after resume |
 | `/usr/local/libexec/t2-services/sleep.d/t2-ave` | Closes/reopens sessions only when the AVE daemon is running |
@@ -207,6 +222,23 @@ The backup contains every managed file that existed before deployment and a
 manifest. KAIT2EN only replaces or removes an ACPI table when its ownership
 marker contains the table's current SHA-256 checksum. Existing unmarked tables
 and modified managed tables are left unchanged and reported as conflicts.
+
+`kait2en-macos-mount.service` is enabled on every installation. At boot the
+helper loads `apfs` and probes each volume of every internal APFS partition
+read-only in turn. Every readable volume is mounted as a subdirectory of the
+single `/media/macOS` directory, named by the role detected from its contents,
+so the whole macOS install is browsed from one place:
+
+| Mount point | Volume | Detected by |
+| --- | --- | --- |
+| `/media/macOS/System` | System | `System/Library/CoreServices/SystemVersion.plist` |
+| `/media/macOS/Preboot` | Preboot | `*/restore/BuildManifest.plist` or `*/cryptex1` |
+| `/media/macOS/iSCPreboot` | iSCPreboot | `nvram.plist` with a `Firmware/` directory |
+| `/media/macOS/Recovery` | Recovery | signed boot objects `*/*.im4m` |
+
+The probe runs on every boot because the volume order differs between Macs and
+macOS versions. The macOS Data volume is encrypted and stays unmounted, and the
+VM volume is left out.
 
 ## Apple firmware from the installer USB drive
 
@@ -330,3 +362,9 @@ markers below `$XDG_CACHE_HOME/t2-kernel-builder/build` (normally
 `$XDG_CONFIG_HOME/t2-kernel-builder` (normally `~/.config/t2-kernel-builder`).
 Kernels installed through the app add their normal files below `/boot` and
 `/lib/modules/<kernel>/`; package-managed builds are installed through DNF.
+
+The installer builds all KaiT2en Rust apps and services into one shared Cargo
+target directory at `~/.cache/kait2en/cargo-target` of the user who invoked
+`sudo`. The apps share their GTK dependencies there, and updates rebuild only
+what changed. Deleting the directory is safe. The next installer run rebuilds
+it.

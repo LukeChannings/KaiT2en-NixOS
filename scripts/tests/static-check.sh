@@ -106,8 +106,8 @@ grep -Fq 'device_access_ready' apps/t2-touchbar/install.sh
 # ISOs up to v0.1.12 delegate to the old installer path.
 grep -Fq 'auto-installer/runtime' packaging/installer/runtime/kait2en-install
 grep -Fq '"$BIN" --detach' apps/t2-touchbar/uninstall.sh
-grep -Fq 'clean_cargo_build "$APP_DIR"' apps/t2-touchbar/install.sh
-grep -Fq 'make -C "$path" clean' scripts/fedora/lib.sh
+grep -Fq 'build_cargo_project "$APP_DIR"' apps/t2-touchbar/install.sh
+grep -Fq 'env CARGO_TARGET_DIR="$CARGO_TARGET_DIR" make -C "$path" build' scripts/fedora/lib.sh
 grep -Fq 'device_group_is_live' apps/t2-touchbar/install.sh
 grep -Fq 'kait2en-touchbar --attach' \
 	apps/t2-touchbar/integration/systemd/system/kait2en-touchbar-attach.service
@@ -162,6 +162,9 @@ grep -Fq '/etc/modprobe.d/kait2en-silent-blacklist.conf' \
 	scripts/fedora/install-kernel-args.sh
 grep -Fq 'ln -sfn kait2en-multicall /usr/local/bin/edit-grub' scripts/fedora/install.sh
 grep -Fq 'ln -sfn kait2en-multicall /usr/local/bin/update-grub' scripts/fedora/install.sh
+grep -Fq 'ln -sfn kait2en-multicall /usr/local/bin/boot-macos' scripts/fedora/install.sh
+grep -Fq 'ln -sfn kait2en-multicall /usr/local/bin/update-modules' scripts/fedora/install.sh
+grep -Fq 'ln -sfn kait2en-multicall /usr/local/bin/update-apps' scripts/fedora/install.sh
 grep -Fq 'exec sudo nano /etc/default/grub' scripts/fedora/kait2en-multicall
 grep -Fq 'exec sudo grub2-mkconfig -o /boot/grub2/grub.cfg' \
 	scripts/fedora/kait2en-multicall
@@ -286,4 +289,5 @@ bash scripts/tests/release-bootstrap.sh
 bash scripts/tests/terminal-launcher.sh
 bash scripts/tests/iso-download.sh
 bash scripts/tests/edition-catalog.sh
+bash scripts/tests/cargo-lock-alignment.sh
 printf 'Installer static checks passed.\n'

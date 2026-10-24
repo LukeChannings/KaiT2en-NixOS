@@ -42,27 +42,7 @@ repair_empty_grub_cmdline() {
 	info "restored GRUB_CMDLINE_LINUX from the installed kernel command line"
 }
 
-REMOVE_ARGS=(
-	"'acpi_osi=Windows 2012'"
-	"acpi_osi='Windows 2012'"
-	acpi_osi
-	intel_iommu
-	iommu
-	pm_async
-	brcmfmac.p2pon
-	pci
-	pcie_ports
-	pcie_aspm
-	pcie_aspm.policy
-	nvme_core.default_ps_max_latency_us
-	apple_gmux.force_igd
-	t2gmux.force_igd
-	amdgpu.aspm
-	i915.enable_guc
-	mem_sleep_default
-	initcall_blacklist
-	module_blacklist
-)
+REMOVE_ARGS=()
 
 ADD_ARGS=(
 	"amdgpu.aspm=1"
@@ -74,6 +54,7 @@ ADD_ARGS=(
 	"pcie_aspm=force"
 	"pcie_aspm.policy=powersave"
 	"pcie_ports=compat"
+	"pci=noaer"
 	"mem_sleep_default=deep"
 )
 
@@ -89,21 +70,6 @@ if [[ "$model" == iMac* ]]; then
 	done
 	ADD_ARGS=("${kept_args[@]}")
 	info "not forcing PCIe ASPM on $model"
-fi
-
-# The Navi 14 of the MacBookPro16,1 drops off the PCIe bus under load on
-# several machines. Leave ASPM on its link to the firmware and to amdgpu's own
-# decision while this is investigated.
-if [[ "$model" == MacBookPro16,1 ]]; then
-	kept_args=()
-	for arg in "${ADD_ARGS[@]}"; do
-		case "$arg" in
-			amdgpu.aspm=1 | pcie_aspm=force | pcie_aspm.policy=powersave) ;;
-			*) kept_args+=("$arg") ;;
-		esac
-	done
-	ADD_ARGS=("${kept_args[@]}")
-	info "not forcing PCIe or AMDGPU ASPM on $model"
 fi
 
 INITCALL_BLACKLIST="initcall_blacklist=cmos_init,magicmouse_driver_init"
