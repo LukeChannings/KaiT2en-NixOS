@@ -21,7 +21,7 @@ in
 }:
 
 stdenvNoCC.mkDerivation {
-  name = name;
+  inherit name;
 
   dontUnpack = true;
 

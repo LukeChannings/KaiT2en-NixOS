@@ -37,3 +37,12 @@ compile_commands.json
 /website/build/
 /tmp
 /temp
+
+# --- NixOS fork (appended; everything above is upstream's) -----------------
+# Kept at the end of the file so upstream merges touch it as rarely as
+# possible.
+result
+result-*
+.direnv/
+.env
+.worktrees/

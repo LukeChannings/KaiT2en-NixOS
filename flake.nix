@@ -15,8 +15,11 @@
     flake-parts.url = "github:hercules-ci/flake-parts";
     flake-parts.inputs.nixpkgs-lib.follows = "nixpkgs";
 
-    flake-compat.url = "https://git.lix.systems/lix-project/flake-compat/archive/main.tar.gz";
+    flake-compat.url = "git+https://git.lix.systems/lix-project/flake-compat";
     flake-compat.flake = false;
+
+    treefmt-nix.url = "github:numtide/treefmt-nix";
+    treefmt-nix.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs =
@@ -68,8 +71,19 @@
           };
       in
       {
-        # T2 Macs are Intel x86_64 hardware; nothing here targets other systems.
-        systems = [ "x86_64-linux" ];
+        imports = [ inputs.treefmt-nix.flakeModule ];
+
+        # T2 Macs are Intel x86_64 hardware, so every *package* here is
+        # x86_64-linux only (guarded in `perSystem` below). The other systems
+        # are listed purely so the tooling devShell — treefmt, just — resolves
+        # on the machines this repo is edited from, which are typically not
+        # the T2 Macs it targets.
+        systems = [
+          "x86_64-linux"
+          "aarch64-linux"
+          "aarch64-darwin"
+          "x86_64-darwin"
+        ];
 
         # System-independent outputs.
         flake = {
@@ -161,10 +175,20 @@
           };
         };
 
-        # Per-system outputs (packages, checks, formatter).
+        # Per-system outputs (packages, checks, devShell, formatter).
         perSystem =
-          { pkgs, lib, ... }:
+          {
+            config,
+            pkgs,
+            lib,
+            ...
+          }:
           let
+            # Everything below the devShell is T2 hardware: an x86_64-linux
+            # kernel and modules built against it. On any other system those
+            # attributes simply do not exist, so `nix flake check` and
+            # `nix-shell` still work from a developer's Mac.
+            onT2 = lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux");
             # `callPackage` decorates its result with `override`/
             # `overrideDerivation`; strip them so only real packages surface.
             stripCallPackage =
@@ -189,6 +213,9 @@
               kernelModules
               // apps
               // {
+                # `nix build` / `just build` with no attribute: the kernel is
+                # the headline artifact and the expensive one to cache.
+                default = kait2enKernel;
                 # The patched KaiT2en kernel (Fedora-matched base + SPI-HID ABI patch).
                 kernel = kait2enKernel;
                 inherit audioUcmConf;
@@ -203,7 +230,7 @@
             # `nix flake check` fail without allowUnfree. Reach it instead through
             # the overlay (`pkgs.kait2en.brcm-firmware`) or the
             # `hardware.kait2en.firmware` NixOS module.
-            packages = allPackages;
+            packages = onT2 allPackages;
 
             # The complete build gate: every package (kernel included) plus the
             # per-profile NixOS toplevels. `nix flake check` therefore proves the
@@ -211,13 +238,22 @@
             # (.agents/skills/sync-upstream/SKILL.md) and CI rely on. Keeping it
             # derived from `allPackages`/`checkConfigurations` means new packages
             # and profiles are gated automatically; nothing to remember.
-            checks =
+            checks = onT2 (
               allPackages
               // lib.mapAttrs' (
                 name: system: lib.nameValuePair "nixos-${name}" system.config.system.build.toplevel
-              ) checkConfigurations;
+              ) checkConfigurations
+            );
 
-            formatter = pkgs.nixfmt-tree;
+            # Provides `formatter` and `checks.treefmt` (see treefmt.nix).
+            treefmt = ./treefmt.nix;
+
+            devShells.default = pkgs.mkShell {
+              packages = [
+                pkgs.just
+                config.treefmt.build.wrapper
+              ];
+            };
           };
       }
     );

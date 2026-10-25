@@ -28,7 +28,7 @@
   lsp-plugins,
 }:
 
-stdenvNoCC.mkDerivation (finalAttrs: {
+stdenvNoCC.mkDerivation (_finalAttrs: {
   pname = "t2-dsp";
   version = "0.1.0";
 

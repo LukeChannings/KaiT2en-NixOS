@@ -1,0 +1,52 @@
+---
+# The KaiT2en-NixOS build gate.
+#
+# `just test` builds the flake's `checks` — every package (patched kernel,
+# every out-of-tree module, every app) plus the three per-profile NixOS
+# toplevels — so a green run proves the whole stack still builds. That is the
+# gate the sync-upstream skill relies on.
+#
+# The realised closures are then pushed to the niks3 binary cache at
+# https://nix.channings.me, so hardware smoke tests and consumers
+# (hartlandia) substitute instead of rebuilding: a sync-PR kernel is built
+# once, here. `just test` keeps going past a failing target and links
+# everything that did build, so even a failed gate caches the multi-hour
+# kernel and the fix-up run does not rebuild it.
+name: Test
+
+"on":
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Build gate
+    # The kernel and every module are x86_64-linux; pin the arch.
+    runs-on: nixos-latest-x86_64
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          REF_NAME: ${{ github.ref_name }}
+          TOKEN: ${{ github.token }}
+        run: >-
+          git clone --depth 1 -b "${HEAD_REF:-$REF_NAME}"
+          "https://$TOKEN@forge.channings.me/$GITHUB_REPOSITORY.git" .
+      # yamllint disable-line rule:line-length
+      - uses: https://forge.channings.me/hartlandia/nixham/.forgejo/actions/setup-nix-shell@main
+      - name: Build gate
+        run: just test
+      # Runs even when the gate failed (but not on cancel), pushing whatever
+      # was realised. Fork PRs get no secrets.
+      - name: Push to nix.channings.me
+        if: >-
+          !cancelled()
+          && (github.event_name == 'push'
+          || github.event.pull_request.head.repo.full_name == github.repository)
+        # yamllint disable-line rule:line-length
+        uses: https://forge.channings.me/hartlandia/nixham/.forgejo/actions/niks3-push@main
+        with:
+          token: ${{ secrets.NIKS3_CI_TOKEN }}
+          paths: ./result*

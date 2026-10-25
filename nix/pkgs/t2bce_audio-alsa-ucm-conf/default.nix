@@ -24,7 +24,7 @@ stdenvNoCC.mkDerivation {
   pname = "t2bce_audio-alsa-ucm-conf";
   # Track the stock tree we overlay onto; the AppleT2 profiles are versioned
   # with the wider KaiT2en tree, not independently.
-  version = alsa-ucm-conf.version;
+  inherit (alsa-ucm-conf) version;
 
   src = lib.cleanSource ../../../modules/t2bce_audio-alsa-ucm-conf;
 
