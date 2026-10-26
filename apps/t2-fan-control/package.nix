@@ -71,8 +71,6 @@ rustPlatform.buildRustPackage {
       --replace-fail 'Exec=/usr/local/bin/' "Exec=$out/bin/"
     install -Dm644 assets/icons/hicolor/scalable/apps/org.t2fancontrol.gtk.svg \
       "$out/share/icons/hicolor/scalable/apps/org.t2fancontrol.gtk.svg"
-    install -Dm644 assets/icons/hicolor/index.theme \
-      "$out/share/icons/hicolor/index.theme"
     install -Dm644 systemd/t2-fancontrol.service \
       "$out/lib/systemd/system/t2-fancontrol.service"
   '';

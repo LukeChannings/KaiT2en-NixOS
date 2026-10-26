@@ -3,7 +3,9 @@
 # that lifts the charge limit for calibration like macOS powerd does.
 #
 # Same shape as t2-fan-control: rustPlatform builds the binary, then we
-# reproduce the Makefile's install of the desktop entry, icon and theme index.
+# reproduce the Makefile's install of the desktop entry and icon. Not the
+# bundled hicolor index.theme: in a profile it shadows hicolor-icon-theme's
+# and hides every non-scalable app icon.
 # The upstream unit (systemd/t2-smc-gaugingd.service) hardcodes
 # /usr/local/bin, so the NixOS module defines it natively instead.
 #
@@ -62,8 +64,6 @@ rustPlatform.buildRustPackage {
       --replace-fail 'Exec=/usr/local/bin/' "Exec=$out/bin/"
     install -Dm644 assets/icons/hicolor/scalable/apps/org.t2smccontrol.gtk.svg \
       "$out/share/icons/hicolor/scalable/apps/org.t2smccontrol.gtk.svg"
-    install -Dm644 assets/icons/hicolor/index.theme \
-      "$out/share/icons/hicolor/index.theme"
   '';
 
   meta = {
