@@ -6,19 +6,37 @@ name: Lint
     branches: [main]
   pull_request:
 
+concurrency:
+  group: lint-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     name: Lint
     runs-on: nixos-latest
     steps:
+      # Retried for the same reason as the gate's checkout: the link to the
+      # forge drops streams, and a bare `git clone` has no retry at all.
       - name: Checkout
         env:
           HEAD_REF: ${{ github.head_ref }}
           REF_NAME: ${{ github.ref_name }}
           TOKEN: ${{ github.token }}
-        run: >-
-          git clone --depth 1 -b "${HEAD_REF:-$REF_NAME}"
-          "https://$TOKEN@forge.channings.me/$GITHUB_REPOSITORY.git" .
+        run: |
+          set -euo pipefail
+          ref="${HEAD_REF:-$REF_NAME}"
+          url="https://$TOKEN@forge.channings.me/$GITHUB_REPOSITORY.git"
+          for i in 1 2 3; do
+            find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+            if git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
+                 clone --depth 1 --single-branch -b "$ref" "$url" .; then
+              exit 0
+            fi
+            echo "::warning::clone failed (attempt $i/3)" >&2
+            sleep $((i * 10))
+          done
+          echo "::error::could not clone the repo after 3 attempts" >&2
+          exit 1
       # yamllint disable-line rule:line-length
       - uses: https://forge.channings.me/hartlandia/nixham/.forgejo/actions/setup-nix-shell@main
       - name: Lint

@@ -19,6 +19,13 @@ name: Test
     branches: [main]
   pull_request:
 
+# A gate run is hours of kernel. Never let two stack up on the same ref;
+# the newest push is the only one whose result anyone wants. (The old
+# .github/workflows/nix.yml had this and it was lost in the move here.)
+concurrency:
+  group: gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Build gate
@@ -29,14 +36,35 @@ jobs:
     runs-on: nixos-latest-x86_64
     timeout-minutes: 360
     steps:
+      # The link to the forge drops streams -- hartlandia's build.yaml
+      # retries its LFS pull for exactly this reason. Run 10 of this
+      # workflow stalled mid-clone for ten minutes and then died with
+      # "RPC failed; curl 56 Recv failure: Can't assign requested address",
+      # failing the gate before a single derivation was built.
+      #
+      # lowSpeedLimit/lowSpeedTime abort a transfer that has stalled for a
+      # minute, so a dead stream is retried promptly instead of hanging
+      # until the RPC collapses ten minutes later.
       - name: Checkout
         env:
           HEAD_REF: ${{ github.head_ref }}
           REF_NAME: ${{ github.ref_name }}
           TOKEN: ${{ github.token }}
-        run: >-
-          git clone --depth 1 -b "${HEAD_REF:-$REF_NAME}"
-          "https://$TOKEN@forge.channings.me/$GITHUB_REPOSITORY.git" .
+        run: |
+          set -euo pipefail
+          ref="${HEAD_REF:-$REF_NAME}"
+          url="https://$TOKEN@forge.channings.me/$GITHUB_REPOSITORY.git"
+          for i in 1 2 3; do
+            find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+            if git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
+                 clone --depth 1 --single-branch -b "$ref" "$url" .; then
+              exit 0
+            fi
+            echo "::warning::clone failed (attempt $i/3)" >&2
+            sleep $((i * 10))
+          done
+          echo "::error::could not clone the repo after 3 attempts" >&2
+          exit 1
       # yamllint disable-line rule:line-length
       - uses: https://forge.channings.me/hartlandia/nixham/.forgejo/actions/setup-nix-shell@main
       - name: Build gate
