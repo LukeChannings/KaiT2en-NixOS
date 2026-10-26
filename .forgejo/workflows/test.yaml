@@ -22,7 +22,9 @@ name: Test
 jobs:
   test:
     name: Build gate
-    # The kernel and every module are x86_64-linux; pin the arch.
+    # The kernel and every module are x86_64-linux. This must be a genuinely
+    # x86_64 runner: `just test` refuses to run anywhere else rather than
+    # report a green gate having built nothing.
     runs-on: nixos-latest-x86_64
     timeout-minutes: 360
     steps:
@@ -38,11 +40,28 @@ jobs:
       - uses: https://forge.channings.me/hartlandia/nixham/.forgejo/actions/setup-nix-shell@main
       - name: Build gate
         run: just test
-      # Runs even when the gate failed (but not on cancel), pushing whatever
-      # was realised. Fork PRs get no secrets.
+      # A failed gate still leaves every target it did realise linked as
+      # ./result-N, so the push below caches them — above all the multi-hour
+      # kernel. When it realised nothing there is nothing to push, and
+      # niks3-push treats an unmatched ./result* glob as a fatal error, which
+      # would bury the gate's real failure under a misleading
+      # "path does not exist".
+      - name: Check for realised paths
+        id: realised
+        if: '!cancelled()'
+        shell: bash
+        run: |
+          if compgen -G './result*' > /dev/null; then
+            echo 'any=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'any=false' >> "$GITHUB_OUTPUT"
+            echo 'nothing was realised; skipping the cache push'
+          fi
+      # Fork PRs get no secrets.
       - name: Push to nix.channings.me
         if: >-
           !cancelled()
+          && steps.realised.outputs.any == 'true'
           && (github.event_name == 'push'
           || github.event.pull_request.head.repo.full_name == github.repository)
         # yamllint disable-line rule:line-length

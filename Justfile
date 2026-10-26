@@ -40,12 +40,39 @@ build attr="default":
 test:
     #!/usr/bin/env bash
     set -uo pipefail
+
+    system="$(nix-instantiate --eval --expr builtins.currentSystem | tr -d '"')"
+    echo "build gate on: $system"
+
+    # The gate is an x86_64-linux kernel and the modules built against it;
+    # `checks` is empty on every other system. Refusing to run there is the
+    # point: the first version of this recipe printed "no checks for this
+    # system" and exited 0, so a CI runner that was not x86_64-linux reported
+    # a green gate having built nothing at all.
+    if [ "$system" != "x86_64-linux" ]; then
+      echo "error: the build gate targets x86_64-linux, not $system" >&2
+      exit 1
+    fi
+
     rm -f result result-*
-    readarray -t drvs < <(
-      nix-instantiate -E \
-        'builtins.attrValues (builtins.getAttr builtins.currentSystem (import ./. { }).checks)'
-    )
-    [ "${#drvs[@]}" -gt 0 ] || { echo "no checks for this system" >&2; exit 0; }
+
+    # Instantiate separately from building, so that an evaluation failure is
+    # never mistaken for "nothing to build".
+    drvfile="$(mktemp)"
+    trap 'rm -f "$drvfile"' EXIT
+    if ! nix-instantiate -E \
+      'builtins.attrValues (builtins.getAttr builtins.currentSystem (import ./. { }).checks)' \
+      > "$drvfile"; then
+      echo "error: evaluating the build gate failed" >&2
+      exit 1
+    fi
+    readarray -t drvs < "$drvfile"
+    if [ "${#drvs[@]}" -eq 0 ]; then
+      echo "error: the build gate evaluated to zero derivations" >&2
+      exit 1
+    fi
+    echo "gate: ${#drvs[@]} derivation(s)"
+
     rc=0
     nix-build --keep-going --no-out-link "${drvs[@]}" > /dev/null || rc=$?
     i=0
