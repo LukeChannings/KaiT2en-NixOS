@@ -102,13 +102,33 @@ jobs:
             echo 'any=false' >> "$GITHUB_OUTPUT"
             echo 'nothing was realised; skipping the cache push'
           fi
-      # Fork PRs get no secrets.
+      # Fork PRs get no secrets, and Forgejo counts an AGit PR
+      # (`git push origin HEAD:refs/for/main`) as a fork PR too: its run has
+      # is_fork_pull_request set and NIKS3_CI_TOKEN arrives empty, even
+      # though the payload's head.repo is this repository. So ask whether the
+      # token actually arrived instead of inferring it from head.repo, which
+      # let run 18 reach niks3-push with an empty token and fail a gate that
+      # had passed. Such a PR's build is not cached; its merge to main is.
+      - name: Check for the cache token
+        id: token
+        if: '!cancelled()'
+        env:
+          NIKS3_CI_TOKEN: ${{ secrets.NIKS3_CI_TOKEN }}
+        run: |
+          if [ -n "$NIKS3_CI_TOKEN" ]; then
+            echo 'present=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'present=false' >> "$GITHUB_OUTPUT"
+            echo '::notice::no NIKS3_CI_TOKEN (fork or AGit PR); not caching'
+          fi
+      # A push to main always attempts the push, so a missing token there
+      # still fails loudly instead of silently leaving the cache cold.
       - name: Push to nix.channings.me
         if: >-
           !cancelled()
           && steps.realised.outputs.any == 'true'
           && (github.event_name == 'push'
-          || github.event.pull_request.head.repo.full_name == github.repository)
+          || steps.token.outputs.present == 'true')
         # yamllint disable-line rule:line-length
         uses: https://forge.channings.me/hartlandia/nixham/.forgejo/actions/niks3-push@main
         with:
