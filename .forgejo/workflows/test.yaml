@@ -3,8 +3,7 @@
 #
 # `just test` builds the flake's `checks` — every package (patched kernel,
 # every out-of-tree module, every app) plus the three per-profile NixOS
-# toplevels — so a green run proves the whole stack still builds. That is the
-# gate the sync-upstream skill relies on.
+# toplevels — so a green run proves the whole stack still builds.
 #
 # The realised closures are then pushed to the niks3 binary cache at
 # https://nix.channings.me, so hardware smoke tests and consumers

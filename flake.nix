@@ -234,8 +234,7 @@
 
             # The complete build gate: every package (kernel included) plus the
             # per-profile NixOS toplevels. `nix flake check` therefore proves the
-            # whole stack builds — this is the gate the upstream-sync skill
-            # (.agents/skills/sync-upstream/SKILL.md) and CI rely on. Keeping it
+            # whole stack builds — this is the gate CI relies on. Keeping it
             # derived from `allPackages`/`checkConfigurations` means new packages
             # and profiles are gated automatically; nothing to remember.
             checks = onT2 (

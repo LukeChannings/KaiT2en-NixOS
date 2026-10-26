@@ -28,7 +28,7 @@ rustPlatform.buildRustPackage {
   # Deliberate divergence from upstream, kept as a patch so `src` stays
   # byte-identical to super/main and upstream merges can take "theirs"
   # unconditionally. The patch header records its drop condition; re-check it
-  # every upstream sync (see .agents/skills/sync-upstream/SKILL.md).
+  # every upstream sync.
   # builtins.path content-addresses the patch by its own bytes so unrelated
   # repo edits don't rebuild the package when consumed as a flake input.
   patches = [

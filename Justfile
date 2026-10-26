@@ -36,7 +36,7 @@ build attr="default":
 # The complete build gate: every package plus the three per-profile NixOS
 # toplevels — i.e. the flake's `checks`. Proves the whole stack still builds
 # (patched kernel, every out-of-tree module, every app, the module wiring).
-# This is what CI runs and what the sync-upstream skill gates on.
+# This is what CI runs.
 #
 # Builds with --keep-going and links every realised output as ./result-N, so
 # one broken target does not throw away the rest: CI's cache push still gets
