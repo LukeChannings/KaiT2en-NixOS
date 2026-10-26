@@ -41,6 +41,7 @@ in
 
   config = lib.mkIf cfg.enable {
     environment.systemPackages = lib.mkIf cfg.installGui [ cfg.package ];
+    services.kait2en-app-folder.apps = lib.mkIf cfg.installGui [ "org.t2fancontrol.gtk.desktop" ];
 
     systemd.services.t2-fancontrol = {
       description = "T2 Fan Control daemon";

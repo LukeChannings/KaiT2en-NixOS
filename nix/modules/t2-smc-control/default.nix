@@ -77,6 +77,7 @@ in
     }
     (lib.mkIf cfg.enable {
       environment.systemPackages = [ cfg.package ];
+      services.kait2en-app-folder.apps = [ "org.t2smccontrol.gtk.desktop" ];
 
       # Mirrors systemd/t2-smc-gaugingd.service.
       systemd.services.t2-smc-gaugingd = lib.mkIf cfg.gauging.enable {

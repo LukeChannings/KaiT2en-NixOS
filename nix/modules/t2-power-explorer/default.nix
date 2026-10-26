@@ -32,5 +32,6 @@ in
 
   config = lib.mkIf cfg.enable {
     environment.systemPackages = [ cfg.package ];
+    services.kait2en-app-folder.apps = [ "org.t2powerexplorer.gtk.desktop" ];
   };
 }

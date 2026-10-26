@@ -5,7 +5,9 @@
 # `services.{t2-fan-control,t2-smc-control,t2-touchbar,t2bce-audio-dsp,
 # kait2en-suspend,kait2en-rtc-sync,t2-services,t2-ave,t2-touchid,t2-journal,
 # t2-power-explorer,t2-power-tune,t2-zone-power,t2-force-click}` options; each
-# leaves itself disabled until you set its `enable = true`.
+# leaves itself disabled until you set its `enable = true`. The exception is
+# `services.kait2en-app-folder`, on by default under GNOME, which groups
+# whichever of those GUI apps are enabled into one app-grid folder.
 {
   config,
   lib,
@@ -29,6 +31,7 @@
     ./t2-zone-power
     ./t2-force-click
     ./t2-gpu-control
+    ./kait2en-app-folder
   ];
 
   # The KaiT2en GUI apps' CSS names the bundled JetBrains Mono, which upstream

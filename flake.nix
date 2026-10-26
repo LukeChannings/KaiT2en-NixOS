@@ -137,6 +137,7 @@
             t2-zone-power = ./nix/modules/t2-zone-power;
             t2-force-click = ./nix/modules/t2-force-click;
             t2-gpu-control = ./nix/modules/t2-gpu-control;
+            kait2en-app-folder = ./nix/modules/kait2en-app-folder;
           };
 
           # Per-device profiles: each imports the aggregate modules and switches

@@ -30,6 +30,7 @@ in
 
   config = lib.mkIf cfg.enable {
     environment.systemPackages = [ cfg.package ];
+    services.kait2en-app-folder.apps = [ "org.t2zonepower.gtk.desktop" ];
 
     # Mirrors systemd/t2-zonepowerd.service.
     systemd.services.t2-zonepowerd = {
