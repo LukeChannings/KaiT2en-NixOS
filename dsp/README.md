@@ -22,7 +22,11 @@ Speaker graphs target the UCM Speaker node directly. WirePlumber gives it a
 stable model-specific name, pins its channel layout to the one its graph
 emits, and marks it `Audio/Sink/Internal`, so the DSP sink is the only speaker
 device applications can select: there is no unprocessed path around the
-crossover and limiter. The internal microphone node is renamed the same way.
+crossover and limiter. Desktop sound panels enumerate card ports rather than
+sinks, so the card's `[Out] Speaker` port is hidden as well
+(`api.acp.hidden-ports`); that suppresses the port's routes only, and leaves
+the node the graph plays into untouched. The internal microphone node is
+renamed the same way.
 The DSP sink is named after the machine family, for example `MacBook Pro
 Speakers`.
 

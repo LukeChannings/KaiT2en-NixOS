@@ -131,6 +131,19 @@ class PackagingTests(unittest.TestCase):
             self.assertEqual(graph["capture.props"]["media.class"], "Audio/Sink")
             self.assertEqual(graph["node.description"], builder.speaker_name(product))
 
+    def test_raw_speaker_port_is_hidden_from_the_card(self):
+        # Audio/Sink/Internal hides the node from PulseAudio; GNOME lists card
+        # ports, so the UCM Speaker device needs hiding there too.
+        matches = []
+        for rule in self.conf["monitor.alsa.rules"]:
+            ports = rule.get("actions", {}).get("update-props", {}).get("api.acp.hidden-ports")
+            if ports is not None:
+                self.assertEqual(ports, ["[Out] Speaker"])
+                matches.extend(rule["matches"])
+        # Device rules run before WirePlumber adds alsa.id, so this one cannot
+        # be keyed on the card id the way the node rules are.
+        self.assertEqual(matches, [{"api.alsa.card.name": "Apple T2 Audio"}])
+
     def test_speaker_filter_streams_do_not_pause_on_short_idle_gaps(self):
         for profile in builder.models().values():
             graph = json.loads((self.output / "profiles" / profile / "graph.json").read_text())

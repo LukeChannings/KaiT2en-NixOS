@@ -140,6 +140,18 @@ def build(output, datadir):
         "actions": {"update-props": {
             "audio.allowed-rates": [96000, 88200, 48000, 44100]}},
     })
+    # Audio/Sink/Internal keeps the raw speaker node out of the PulseAudio sink
+    # list, but GNOME builds its output list from the card's ports, so the UCM
+    # Speaker device still showed up there as "Internal Speakers" beside the DSP
+    # sink. Hiding the port drops it from EnumRoute/Route only: the device, its
+    # node and the graph's links to it are untouched (spa/plugins/alsa/acp).
+    # Device rules are applied before WirePlumber adds the alsa.* props, so this
+    # has to match on the card name rather than on the udev-assigned alsa.id.
+    monitor.append({
+        "matches": [{"api.alsa.card.name": "Apple T2 Audio"}],
+        "actions": {"update-props": {
+            "api.acp.hidden-ports": ["[Out] Speaker"]}},
+    })
     # The speaker DSP sink has priority.session=1400.  Keep the headphone
     # PCM as a separate node, but let it win automatic default selection while
     # its jack-backed UCM route is available.

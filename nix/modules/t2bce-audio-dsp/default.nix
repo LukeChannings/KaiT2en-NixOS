@@ -17,7 +17,8 @@
 #   3. WirePlumber (dsp's 51-t2-dsp.conf + t2-default-output.lua): raw-mic and
 #      raw-speaker rename, speaker allowed-rates, headphone priority and the
 #      jack-follows-default hook. The raw speaker node is marked
-#      `Audio/Sink/Internal` so only the DSP sink is user-selectable.
+#      `Audio/Sink/Internal`, and the card's `[Out] Speaker` port hidden, so
+#      only the DSP sink is user-selectable.
 #   4. PipeWire: the model's filter chains (`share/t2-dsp/pipewire/<model>.conf`,
 #      which upstream's lifecycle `configure_dsp_pipewire` copies to
 #      /etc/pipewire/pipewire.conf.d/51-t2-dsp.conf) targeting the UCM node
