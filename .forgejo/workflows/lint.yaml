@@ -27,7 +27,7 @@ jobs:
           ref="${HEAD_REF:-$REF_NAME}"
           url="https://$TOKEN@forge.channings.me/$GITHUB_REPOSITORY.git"
           for i in 1 2 3; do
-            find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+            rm -rf -- ..?* .[!.]* *
             if git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
                  clone --depth 1 --single-branch -b "$ref" "$url" .; then
               exit 0

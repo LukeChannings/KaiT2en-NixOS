@@ -45,6 +45,12 @@ jobs:
       # lowSpeedLimit/lowSpeedTime abort a transfer that has stalled for a
       # minute, so a dead stream is retried promptly instead of hanging
       # until the RPC collapses ten minutes later.
+      #
+      # This step runs BEFORE setup-nix-shell, so it has only the host-exec
+      # runner's static PATH (hartlandia's lib/ci-toolchain.nix) -- coreutils
+      # but no findutils. Hence POSIX globs rather than `find`, which died
+      # here with exit 127. Everything after setup-nix-shell has the
+      # devshell's PATH and is not so constrained.
       - name: Checkout
         env:
           HEAD_REF: ${{ github.head_ref }}
@@ -55,7 +61,7 @@ jobs:
           ref="${HEAD_REF:-$REF_NAME}"
           url="https://$TOKEN@forge.channings.me/$GITHUB_REPOSITORY.git"
           for i in 1 2 3; do
-            find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+            rm -rf -- ..?* .[!.]* *
             if git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
                  clone --depth 1 --single-branch -b "$ref" "$url" .; then
               exit 0
