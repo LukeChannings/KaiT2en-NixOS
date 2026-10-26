@@ -6,24 +6,27 @@
 # scripts/fedora/install-alsa-ucm.sh + install-dsp.sh (`make -C dsp install`)
 # do, with the Fedora lifecycle's DMI pick replaced by `model`:
 #
-#   1. ALSA UCM: the AppleT2 split-PCM use cases
-#      (modules/t2bce_audio-alsa-ucm-conf, packaged with the stock tree as
-#      nix/pkgs/t2bce_audio-alsa-ucm-conf) split the raw multichannel PCM into
+#   1. ALSA UCM: the AppleT2 use cases (modules/t2bce_audio-alsa-ucm-conf,
+#      packaged with the stock tree as nix/pkgs/t2bce_audio-alsa-ucm-conf)
+#      expose the raw multichannel PCM, the headphone PCM and the mic PCM as
 #      the Speaker / Headphones / Mic devices. NixOS' alsa-lib reads its UCM
 #      tree from the store, so `ALSA_CONFIG_UCM2` points PipeWire, WirePlumber
 #      and the alsa CLI at the overlaid tree.
 #   2. udev (dsp's 89-t2-dsp.rules): renames the card's ALSA id to
 #      `t2-<profile>` from the DMI product name; everything below keys off it.
-#   3. WirePlumber (dsp's 51-t2-dsp.conf + t2-default-output.lua): raw-mic
-#      rename, speaker allowed-rates, headphone priority and the
-#      jack-follows-default hook.
+#   3. WirePlumber (dsp's 51-t2-dsp.conf + t2-default-output.lua): raw-mic and
+#      raw-speaker rename, speaker allowed-rates, headphone priority and the
+#      jack-follows-default hook. The raw speaker node is marked
+#      `Audio/Sink/Internal` so only the DSP sink is user-selectable.
 #   4. PipeWire: the model's filter chains (`share/t2-dsp/pipewire/<model>.conf`,
 #      which upstream's lifecycle `configure_dsp_pipewire` copies to
 #      /etc/pipewire/pipewire.conf.d/51-t2-dsp.conf) targeting the UCM node
 #      `alsa_output.hw_t2-<model>_0`. The LV2 plugins the graphs use
 #      (bankstown, lsp-plugins) reach LV2_PATH via `requiredLv2Packages`.
 #
-# Raw devices stay available; headphones and the headset mic get no DSP.
+# The raw speaker node is hidden, not removed: it is the DSP graph's backend,
+# and reaching it directly would bypass the crossover and limiter. Headphones
+# and the headset mic get no DSP.
 # Switching from the earlier kekrby ACP integration leaves stale T2 entries in
 # ~/.local/state/wireplumber/default-{profile,nodes,routes}; clear them once
 # (install-alsa-ucm.sh `reset_wireplumber_t2_profile_state` does the same).

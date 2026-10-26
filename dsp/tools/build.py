@@ -17,6 +17,24 @@ def mic_name(profile):
     return f"alsa_input.t2-{profile}.RawMic"
 
 
+# The DSP sink is the only speaker device a user sees, so name it after the
+# machine rather than after the profile. Longest family prefix first: every
+# iMacPro product name also starts with iMac.
+FAMILIES = (
+    ("MacBookAir", "MacBook Air"),
+    ("MacBookPro", "MacBook Pro"),
+    ("iMacPro", "iMac Pro"),
+    ("iMac", "iMac"),
+)
+
+
+def speaker_name(product):
+    for prefix, label in FAMILIES:
+        if product.startswith(prefix):
+            return f"{label} Speakers"
+    raise ValueError(f"no speaker name for product: {product}")
+
+
 def match(profile, stream):
     return {
         "alsa.id": f"t2-{profile}",
@@ -79,10 +97,27 @@ def build(output, datadir):
                 # clients between the DSP sink and headphones without moving
                 # this stream away from its raw speaker backend.
                 graph[props]["node.dont-move"] = True
+                name = speaker_name(product)
+                graph["node.description"] = name
+                graph["media.name"] = name
+                graph[props]["node.description"] = f"{name} Out"
+                graph[props]["media.name"] = f"{name} Out"
             write_json(dest / filename, graph)
             if stream == "capture":
                 monitor.append({"matches": [match(profile, stream)], "actions": {
                     "update-props": {"node.name": target}}})
+            else:
+                # The UCM Speaker device is the graph's only backend, so give it
+                # the name and channel layout the graph targets, and keep it out
+                # of the user-visible sink list: routing around the DSP would
+                # drive the transducers with no crossover and no limiter.
+                monitor.append({"matches": [match(profile, stream)], "actions": {
+                    "update-props": {
+                        "node.name": target,
+                        "media.class": "Audio/Sink/Internal",
+                        "api.alsa.use-chmap": False,
+                        "audio.position": graph[props]["audio.position"],
+                    }}})
         modules = []
         for filename in ("graph.json", "mic.json"):
             path = dest / filename
@@ -98,8 +133,8 @@ def build(output, datadir):
     (output / "89-t2-dsp.rules").write_text("\n".join(udev) + "\n")
     write_json(output / "models.json", models())
     # Constrain the raw T2 speakers to the rates the hardware DSP path expects.
-    # Losing this in the packaging refactor caused startup distortion. No rename
-    # here, so the WirePlumber-generated names stay intact for UCM loopbacks.
+    # Losing this in the packaging refactor caused startup distortion. Applies
+    # to every T2 playback node, speaker backends included.
     monitor.append({
         "matches": [{"alsa.id": "~t2-.*", "api.alsa.pcm.stream": "playback"}],
         "actions": {"update-props": {
@@ -116,8 +151,7 @@ def build(output, datadir):
         }],
         "actions": {"update-props": {"priority.session": 1500}},
     })
-    # Strict JSON is accepted as SPA-JSON. Speaker PCM split parents must keep
-    # their WirePlumber-generated names so UCM loopbacks keep linking correctly.
+    # Strict JSON is accepted as SPA-JSON.
     write_json(output / "51-t2-dsp.conf", {
         "monitor.alsa.rules": monitor,
         "wireplumber.profiles": {"main": {

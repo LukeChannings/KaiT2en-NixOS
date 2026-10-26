@@ -22,9 +22,11 @@ Depending on the model, the graph
 
 The biquad chains are cheap compared with the FIR convolution used before.
 
-On supported Macs, the resulting output appears as **DSP Speakers** device. The
-unprocessed **Apple Internal Speakers** device remains available for comparison
-and diagnostics. Headphones do not pass through the speaker DSP graph.
+On supported Macs, the resulting output appears as a single device named after
+the machine, such as **MacBook Pro Speakers**. The unprocessed speaker device
+is hidden deliberately: driving the transducers without the crossover and
+limiter is unsafe, so the DSP graph is the only route to the internal speakers.
+Headphones do not pass through the speaker DSP graph.
 
 ## Supported models
 

@@ -1,16 +1,16 @@
 # A complete ALSA UCM2 tree = stock `alsa-ucm-conf` plus the KaiT2en Apple T2
-# split-channel use-case profiles (super's `modules/t2bce_audio-alsa-ucm-conf`).
+# use-case profiles (super's `modules/t2bce_audio-alsa-ucm-conf`).
 #
 # The `t2bce_audio` driver names its card `AppleT2x<N>` where N is the speaker
 # channel count (x2/x4/x6). ALSA UCM matches that card `driver` string to
 # `conf.d/AppleT2x<N>/AppleT2x<N>.conf`, which pulls in `AppleT2/HiFi-x<N>.conf`
-# — the profile that split-maps the raw multichannel PCM into the per-transducer
-# Speaker/Mic devices the audio DSP graphs then target.
+# — the profile exposing the raw multichannel PCM as the Speaker device the
+# audio DSP graphs then target, alongside Headphones and Mic.
 #
-# Those profiles `Include` files from the stock tree (`/common/pcm/split.conf`),
-# so we can't ship them standalone: this derivation copies the upstream
-# `alsa-ucm-conf` ucm2 tree and overlays the AppleT2 files on top, yielding one
-# self-contained tree. The `t2bce-audio-dsp` NixOS module points
+# `ALSA_CONFIG_UCM2` is a single root for every card on the system, not just
+# the T2 one, so the AppleT2 profiles can't ship standalone: this derivation
+# copies the upstream `alsa-ucm-conf` ucm2 tree and overlays them on top,
+# yielding one self-contained tree. The `t2bce-audio-dsp` NixOS module points
 # `ALSA_CONFIG_UCM2` at it (mirroring scripts/fedora/install-alsa-ucm.sh).
 # nixpkgs' `alsa-ucm-conf` ships no AppleT2 profile of its own, so there is
 # nothing to remove first (unlike Fedora's).

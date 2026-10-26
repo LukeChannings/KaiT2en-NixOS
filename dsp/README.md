@@ -18,9 +18,13 @@ udev selects a short ALSA card ID from the DMI model at runtime, for example
 There is no install-time PCI detection. Headphones and headset microphones
 are excluded. Unsupported models are not renamed and receive no DSP graph.
 
-Speaker graphs target the UCM split-PCM hardware node. Its name is preserved
-so existing UCM loopbacks remain valid. Only the internal microphone node is
-given a stable model-specific name. Raw devices remain available.
+Speaker graphs target the UCM Speaker node directly. WirePlumber gives it a
+stable model-specific name, pins its channel layout to the one its graph
+emits, and marks it `Audio/Sink/Internal`, so the DSP sink is the only speaker
+device applications can select: there is no unprocessed path around the
+crossover and limiter. The internal microphone node is renamed the same way.
+The DSP sink is named after the machine family, for example `MacBook Pro
+Speakers`.
 
 `make build` generates portable graphs and static rules without touching the
 host. Filter coefficients and FIR data remain unchanged. `make test` checks
