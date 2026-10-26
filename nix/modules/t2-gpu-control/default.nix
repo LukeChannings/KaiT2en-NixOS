@@ -128,7 +128,7 @@ in
         runtime PM, so t2-hybrid-gpu-control cannot power the dGPU down.
       '';
       environment.systemPackages = [ cfg.hybridPackage ];
-      services.kait2en-app-folder.apps = [ "org.t2hybridgpucontrol.gtk.desktop" ];
+      services.kait2en-utilities.apps = [ "org.t2hybridgpucontrol.gtk.desktop" ];
       environment.etc."environment.d/90-kait2en-gsk-renderer.conf".source =
         ../../../apps/t2-hybrid-gpu-control/contrib/90-kait2en-gsk-renderer.conf;
     })
@@ -147,7 +147,7 @@ in
 
     (lib.mkIf (cfg.mode == "dgpu") {
       environment.systemPackages = [ cfg.dgpuPackage ];
-      services.kait2en-app-folder.apps = [ "org.t2dgpucontrol.gtk.desktop" ];
+      services.kait2en-utilities.apps = [ "org.t2dgpucontrol.gtk.desktop" ];
 
       systemd.services = {
         kait2en-dgpu-off = lib.mkIf cfg.powerOffDgpu {

@@ -137,7 +137,20 @@
             t2-zone-power = ./nix/modules/t2-zone-power;
             t2-force-click = ./nix/modules/t2-force-click;
             t2-gpu-control = ./nix/modules/t2-gpu-control;
-            kait2en-app-folder = ./nix/modules/kait2en-app-folder;
+            kait2en-utilities = ./nix/modules/kait2en-utilities;
+          };
+
+          # Home-manager modules. `kait2en-utilities` is the declarative
+          # counterpart of the NixOS module of the same name: GNOME keeps the
+          # app-grid folders in the *user* dconf database, which home-manager
+          # owns, so under home-manager the KaiT2en app folder is plain
+          # `dconf.settings` instead of a login-time unit patching that
+          # database. The two coexist (same keys, same folder ID); run it as a
+          # NixOS-integrated home-manager and it follows the host's
+          # `services.kait2en-utilities.apps` via `osConfig`.
+          homeManagerModules = {
+            default = ./nix/modules/kait2en-utilities/home-manager.nix;
+            kait2en-utilities = ./nix/modules/kait2en-utilities/home-manager.nix;
           };
 
           # Per-device profiles: each imports the aggregate modules and switches

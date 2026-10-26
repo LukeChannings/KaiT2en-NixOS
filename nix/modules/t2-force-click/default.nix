@@ -38,7 +38,7 @@ in
 
   config = lib.mkIf cfg.enable {
     environment.systemPackages = [ cfg.package ];
-    services.kait2en-app-folder.apps = [ "org.t2forceclick.gtk.desktop" ];
+    services.kait2en-utilities.apps = [ "org.t2forceclick.gtk.desktop" ];
 
     # Mirrors systemd/t2-force-click.service.
     systemd.services.t2-force-click = {

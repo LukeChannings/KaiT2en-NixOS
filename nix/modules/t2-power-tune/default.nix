@@ -36,6 +36,6 @@ in
 
   config = lib.mkIf cfg.enable {
     environment.systemPackages = [ cfg.package ];
-    services.kait2en-app-folder.apps = [ "org.t2powertune.gtk.desktop" ];
+    services.kait2en-utilities.apps = [ "org.t2powertune.gtk.desktop" ];
   };
 }
