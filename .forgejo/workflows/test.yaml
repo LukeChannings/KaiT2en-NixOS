@@ -22,9 +22,10 @@ name: Test
 jobs:
   test:
     name: Build gate
-    # The kernel and every module are x86_64-linux. This must be a genuinely
-    # x86_64 runner: `just test` refuses to run anywhere else rather than
-    # report a green gate having built nothing.
+    # The kernel and every module are x86_64-linux. The runner need not be
+    # x86_64 itself, only able to build for it: `snowman` carries this label
+    # from macOS and routes the derivations to its linux-builder, which
+    # offers x86_64-linux through Rosetta.
     runs-on: nixos-latest-x86_64
     timeout-minutes: 360
     steps:

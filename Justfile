@@ -1,3 +1,12 @@
+# T2 Macs are Intel, so everything this repo builds is x86_64-linux and the
+# recipes below target it explicitly. That is deliberately not
+# `builtins.currentSystem`: a host that is not itself x86_64-linux can still
+# build these, because Nix routes the derivations to whatever builder can
+# take them — the fleet's Macs run a nixham linux-builder offering
+# x86_64-linux through Rosetta, which is how the forge's `snowman` runner
+# builds this repo from macOS.
+system := "x86_64-linux"
+
 # List available recipes
 default:
     @just --list
@@ -16,9 +25,9 @@ lint:
     treefmt --ci
 
 # Build package ATTR; with no argument, the default package (the KaiT2en
-# kernel). Only x86_64-linux has packages at all.
+# kernel).
 build attr="default":
-    nix-build -A {{ attr }}
+    nix-build -A packages.{{ system }}.{{ attr }}
 
 # There is deliberately no `build-all`: the gate below (`just test`) builds
 # every package *and* the per-profile NixOS toplevels, so it is a strict
@@ -41,27 +50,17 @@ test:
     #!/usr/bin/env bash
     set -uo pipefail
 
-    system="$(nix-instantiate --eval --expr builtins.currentSystem | tr -d '"')"
-    echo "build gate on: $system"
-
-    # The gate is an x86_64-linux kernel and the modules built against it;
-    # `checks` is empty on every other system. Refusing to run there is the
-    # point: the first version of this recipe printed "no checks for this
-    # system" and exited 0, so a CI runner that was not x86_64-linux reported
-    # a green gate having built nothing at all.
-    if [ "$system" != "x86_64-linux" ]; then
-      echo "error: the build gate targets x86_64-linux, not $system" >&2
-      exit 1
-    fi
-
+    echo "build gate: {{ system }} (host $(nix-instantiate --eval --expr builtins.currentSystem | tr -d '"'))"
     rm -f result result-*
 
     # Instantiate separately from building, so that an evaluation failure is
-    # never mistaken for "nothing to build".
+    # never mistaken for "nothing to build". An earlier version of this
+    # recipe conflated the two and reported a green gate having built
+    # nothing, so both outcomes below are hard errors.
     drvfile="$(mktemp)"
     trap 'rm -f "$drvfile"' EXIT
     if ! nix-instantiate -E \
-      'builtins.attrValues (builtins.getAttr builtins.currentSystem (import ./. { }).checks)' \
+      'builtins.attrValues (import ./. { }).checks.{{ system }}' \
       > "$drvfile"; then
       echo "error: evaluating the build gate failed" >&2
       exit 1

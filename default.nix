@@ -32,8 +32,12 @@ let
     useBuiltinsFetchTree = true;
   };
 
-  system = builtins.currentSystem;
+  # Not `builtins.currentSystem`: T2 Macs are Intel, so x86_64-linux is the
+  # only system this repo has packages for, and a host that is not itself
+  # x86_64-linux can still build them by routing to a remote or Rosetta
+  # builder. Merging this unconditionally keeps `nix-build -A kernel`
+  # working everywhere, instead of failing with a bare "attribute missing"
+  # on a developer's Mac.
+  system = "x86_64-linux";
 in
-# Packages only exist on x86_64-linux (see flake.nix); elsewhere there is
-# nothing to merge, but the devShells and other outputs still resolve.
-flake.defaultNix // (flake.defaultNix.packages.${system} or { })
+flake.defaultNix // flake.defaultNix.packages.${system}
