@@ -47,8 +47,9 @@ chunk. Otherwise proceed with one merge.
 
 | Paths | Resolution |
 |---|---|
-| `modules/**`, `apps/**`, `t2-services/**`, `dsp/**` *sources* (not the nix files below), `scripts/`, `assets/`, `auto-installer/`, `packaging/`, `third-party/`, `website/`, upstream `.github/**`, `patches/**` except `patches/nixos`, docs/licences | **theirs**, unconditionally |
-| `flake.nix`, `flake.lock`, `nix/**`, `patches/nixos/**`, `.agents/**`, `apps/*/package.nix`, `t2-services/*/package.nix`, `dsp/package.nix`, `apps/default.nix`, `modules/default.nix`, `.github/workflows/nix.yml` | **ours** (reconciled via the mirror map, not the merge) |
+| `modules/**`, `apps/**`, `t2-services/**`, `dsp/**` *sources* (not the nix files below), `scripts/`, `assets/`, `auto-installer/`, `packaging/`, `third-party/`, `website/`, upstream `.github/**` except `workflows/`, `patches/**` except `patches/nixos`, docs/licences | **theirs**, unconditionally |
+| `flake.nix`, `flake.lock`, `nix/**`, `patches/nixos/**`, `.agents/**`, `apps/*/package.nix`, `t2-services/*/package.nix`, `dsp/package.nix`, `apps/default.nix`, `modules/default.nix`, `Justfile`, `treefmt.nix`, `default.nix`, `shell.nix`, `.envrc`, `.zed/**`, `.forgejo/**`, `.github/workflows/lint.yaml` | **ours** (reconciled via the mirror map, not the merge) |
+| upstream's `.github/workflows/*.yml` (`installer`, `pages`, `kernel-copr`, `blog-discord`, `upstream-discord`) | **deleted deliberately** — Fedora-specific, and this fork's CI is Forgejo. A modify/delete conflict here resolves as *ours*: `git rm` it and move on. Do **not** restore them. |
 | anything else | read both sides, decide, and add a mirror-map row so next time it's covered |
 
 When upstream renames/deletes a directory that holds one of our
@@ -288,8 +289,9 @@ upstream `.github/**`, `PLAN.md`, docs, `LICENSE*`/`LICENSING.md`/`AUTHORS`/
 
 `flake.nix`, `flake.lock`, `nix/**`, `patches/nixos/**`, `.agents/**`,
 `apps/*/package.nix`, `apps/default.nix`, `t2-services/*/package.nix`,
-`dsp/package.nix`, `modules/default.nix`, `.github/workflows/nix.yml`,
-`nix/pkgs/kernel/patches/*`.
+`dsp/package.nix`, `modules/default.nix`, `default.nix`, `shell.nix`,
+`treefmt.nix`, `Justfile`, `.envrc`, `.zed/**`, `.forgejo/**`,
+`.github/workflows/lint.yaml`, `nix/pkgs/kernel/patches/*`.
 
 ## Divergence register
 
@@ -314,8 +316,15 @@ GPU row, not a divergence.)
 
 ## One-time setup state (done; verify if CI misbehaves)
 
-- Repo secret `NIKS3_AUTH_TOKEN` must exist; the cache's public key is
-  `garage:JZet/fsItH8cJ6SKLci1+BuMIQGDfZSa/8GxGpKcxss=` (set in both
-  `.github/workflows/nix.yml` and the flake's `nixConfig`), and the niks3
-  push invocation should be verified against the deployed version.
-- Upstream's Fedora workflows are disabled in GitHub repo settings.
+- Forge repo secret `NIKS3_CI_TOKEN` must exist; the cache's public key is
+  `garage:JZet/fsItH8cJ6SKLci1+BuMIQGDfZSa/8GxGpKcxss=` (set in the flake's
+  `nixConfig`; CI gets it from nixham's `setup-nix-shell`/`niks3-push`
+  actions).
+- Upstream's Fedora workflows are **deleted**, not disabled: `origin` is now
+  the forge (`forge.channings.me/hartlandia/KaiT2en-NixOS`) and GitHub is the
+  mirror. Forgejo ignores `.github/workflows` whenever `.forgejo/workflows`
+  exists, so only `.forgejo/` runs on the forge.
+- `scripts/tests/static-check.sh` (upstream's) asserts on
+  `.github/workflows/installer.yml`, which no longer exists here, so that
+  script fails on this fork. Nothing in our CI runs it — the gate is
+  `just test` — but do not treat its failure as a regression.

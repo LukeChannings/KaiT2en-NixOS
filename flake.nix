@@ -1,8 +1,8 @@
 {
   description = "KaiT2en — Apple T2 Mac kernel modules and userspace apps, packaged for Nix";
 
-  # CI (.github/workflows/nix.yml) pushes everything `nix flake check` builds
-  # to this cache, so consumers and hardware smoke tests substitute the kernel
+  # CI (.forgejo/workflows/test.yaml) pushes everything `just test` builds to
+  # this cache, so consumers and hardware smoke tests substitute the kernel
   # and modules instead of rebuilding them.
   nixConfig = {
     extra-substituters = [ "https://nix.channings.me" ];
