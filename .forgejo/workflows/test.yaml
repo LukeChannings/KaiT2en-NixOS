@@ -46,13 +46,17 @@ jobs:
       # niks3-push treats an unmatched ./result* glob as a fatal error, which
       # would bury the gate's real failure under a misleading
       # "path does not exist".
+      # POSIX glob test, not `compgen -G`: the runner executes this with sh,
+      # where compgen does not exist. It failed open to "nothing realised",
+      # which would have skipped the push even on a good build.
       - name: Check for realised paths
         id: realised
         if: '!cancelled()'
-        shell: bash
         run: |
-          if compgen -G './result*' > /dev/null; then
+          set -- ./result*
+          if [ -e "$1" ] || [ -L "$1" ]; then
             echo 'any=true' >> "$GITHUB_OUTPUT"
+            echo "realised $# path(s) to push"
           else
             echo 'any=false' >> "$GITHUB_OUTPUT"
             echo 'nothing was realised; skipping the cache push'
