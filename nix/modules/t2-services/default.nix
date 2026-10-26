@@ -15,6 +15,10 @@
 #     pre/post around sleep, which runs every feature's sleep.d hook. Upstream
 #     installs hooks into $LIBEXECDIR/t2-services/sleep.d; here the hook dir is
 #     a store linkFarm of the enabled features' hooks, passed via T2_HOOK_DIR.
+#   * t2-ncm-carrier.service (local, no upstream equivalent): bridgeOS never
+#     reports carrier on the NCM link when cdc_ncm binds in early boot, so the
+#     link stays without a link-local address until the first resume. The
+#     service rebinds cdc_ncm once after boot if carrier is still missing.
 #   * The Fedora lifecycle/migration helpers (packaging/lifecycle,
 #     integration/migration, integration/libexec/package-actions) are
 #     installer bookkeeping and not consumed.
@@ -59,6 +63,12 @@ let
         wrapProgram "$out/bin/t2-ncm-sleep" \
           --prefix PATH : ${lib.makeBinPath [ pkgs.coreutils ]}
       '';
+
+  ncmCarrier = pkgs.writeShellApplication {
+    name = "t2-ncm-carrier";
+    runtimeInputs = [ pkgs.coreutils ];
+    text = builtins.readFile ./t2-ncm-carrier.sh;
+  };
 
   # Upstream installs each feature's hook into $LIBEXECDIR/t2-services/sleep.d.
   hookDir = pkgs.linkFarm "t2-services-sleep.d" (
@@ -200,6 +210,22 @@ in
           TimeoutStopSec = 300;
           ExecStart = "${ncmSleep}/bin/t2-ncm-sleep pre";
           ExecStop = "${ncmSleep}/bin/t2-ncm-sleep post";
+        };
+      };
+
+      # See t2-ncm-carrier.sh. Type=exec rather than oneshot so the grace
+      # period and rebind retries never hold up multi-user.target.
+      systemd.services.t2-ncm-carrier = {
+        description = "Bring up carrier on the T2 service link after boot";
+        after = [ "NetworkManager.service" ];
+        wantedBy = [ "multi-user.target" ];
+        serviceConfig = {
+          Type = "exec";
+          ExecStart = lib.getExe ncmCarrier;
+          NoNewPrivileges = true;
+          PrivateTmp = true;
+          ProtectHome = true;
+          ProtectSystem = "strict";
         };
       };
     })
