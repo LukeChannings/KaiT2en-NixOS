@@ -51,19 +51,26 @@ jobs:
       # but no findutils. Hence POSIX globs rather than `find`, which died
       # here with exit 127. Everything after setup-nix-shell has the
       # devshell's PATH and is not so constrained.
+      #
+      # Fetches github.ref rather than `clone -b <branch>`: on a pull_request
+      # that is refs/pull/N/head, which exists for every PR -- same-repo,
+      # fork, or AGit (`git push origin HEAD:refs/for/main`). An AGit PR has
+      # no source branch on the forge, so github.head_ref is the bare
+      # "refs/pull/N/head", which `clone -b` rejects. Fetching from a URL
+      # instead of adding a remote also keeps the token out of .git/config.
       - name: Checkout
         env:
-          HEAD_REF: ${{ github.head_ref }}
-          REF_NAME: ${{ github.ref_name }}
+          REF: ${{ github.ref }}
           TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          ref="${HEAD_REF:-$REF_NAME}"
           url="https://$TOKEN@forge.channings.me/$GITHUB_REPOSITORY.git"
           for i in 1 2 3; do
             rm -rf -- ..?* .[!.]* *
-            if git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
-                 clone --depth 1 --single-branch -b "$ref" "$url" .; then
+            if git init -q . \
+               && git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
+                    fetch --depth 1 --no-tags "$url" "$REF" \
+               && git checkout -q --detach FETCH_HEAD; then
               exit 0
             fi
             echo "::warning::clone failed (attempt $i/3)" >&2
