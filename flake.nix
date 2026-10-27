@@ -170,7 +170,7 @@
           # kernel, so they stay behind `self.lib.<system>.kernelModulesFor`).
           # The brcm-firmware builder is exposed too; it takes a macOS `version`,
           # so `brcm-firmware` defaults to sonoma and `brcm-firmwareFor` lets you
-          # pick another (monterey/ventura/sonoma).
+          # pick another (monterey/ventura/sonoma/tahoe).
           overlays.default = final: _prev: {
             kait2en = (final.callPackage ./apps { }) // {
               kernelModulesFor = kernel: final.callPackage ./modules { inherit kernel; };

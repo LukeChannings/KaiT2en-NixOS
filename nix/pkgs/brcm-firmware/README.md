@@ -36,12 +36,12 @@ Enable the NixOS module:
 ```nix
 hardware.kait2en.firmware = {
   enable = true;
-  version = "sonoma"; # or "ventura" / "monterey"
+  version = "sonoma"; # or "tahoe" / "ventura" / "monterey"
 };
 ```
 
 or use the package directly through the flake overlay
-(`pkgs.kait2en.brcm-firmware`, or `pkgs.kait2en.brcm-firmwareFor "ventura"`).
+(`pkgs.kait2en.brcm-firmware`, or `pkgs.kait2en.brcm-firmwareFor "tahoe"`).
 
 ## Constraints
 
@@ -51,3 +51,18 @@ or use the package directly through the flake overlay
 - `version` picks the macOS recovery release: pre-Monterey has no Bluetooth
   firmware, and Sequoia drops firmware for the 2018/2019 MacBook Air, so
   `sonoma` is the default.
+- `tahoe` (macOS 26, the last Intel release) has the **newest** Wi-Fi firmware
+  a T2 Mac can get — `9.30.514.0.32.5.94` on a BCM4364B3, against Sonoma's
+  `9.30.503.0.32.5.92` — but ships **no Wi-Fi firmware at all** for
+  `brcmfmac4355c1` (MacBookPro15,x) or `brcmfmac4377b3` (MacBookPro16,2/16,3);
+  of those two chips only the `brcmbt4377b3` Bluetooth pair survives, which is
+  no use without Wi-Fi. It is an option, not the default; pick it only on a
+  model Tahoe still supports.
+- `tahoe` is pinned to Apple's *latest* offer for the board rather than to a
+  fixed release, because no Intel Mac shipped with Tahoe and `osType =
+  "default"` therefore cannot reach it. A macOS 26.x recovery refresh will
+  break its fixed-output hash; re-pin it when that happens.
+- A BaseSystem recovery image carries fewer regional NVRAM variants than an
+  installed macOS, so the extracted set is a subset of what copying the blobs
+  out of a running system would give. This affects only the per-region `.txt`
+  files, not the firmware a given board loads.

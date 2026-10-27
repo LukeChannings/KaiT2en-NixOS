@@ -32,13 +32,25 @@ in
         "monterey"
         "ventura"
         "sonoma"
+        "tahoe"
       ];
       default = "sonoma";
-      example = "ventura";
+      example = "tahoe";
       description = ''
         The macOS recovery version to extract the Broadcom firmware from.
         Versions before Monterey have no Bluetooth firmware; Sequoia drops
         firmware for the 2018/2019 MacBook Air, so `sonoma` is the safe default.
+
+        `tahoe` (macOS 26) carries the newest Wi-Fi firmware available to a T2
+        Mac, but ships none at all for the MacBookPro15,x (BCM4355) or
+        MacBookPro16,2/16,3 (BCM4377) — only a BCM4377 Bluetooth pair survives,
+        which is no use without Wi-Fi. Choose it only on a model Tahoe still
+        supports — a MacBookPro16,1 (BCM4364) gains 9.30.514.0.32.5.94 over
+        Sonoma's 9.30.503.0.32.5.92.
+
+        `tahoe` is also the one version pinned to Apple's *latest* offer rather
+        than a fixed release, so a macOS 26.x recovery refresh will break its
+        fixed-output hash until it is re-pinned.
       '';
     };
 

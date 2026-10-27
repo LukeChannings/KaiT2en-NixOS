@@ -45,6 +45,25 @@ let
       osType = "default";
       hash = "sha256-phlpwNTYhugqX2KGljqxpbfGtCFDgggQPzB7U29XSmM=";
     };
+    # macOS 26, the last Intel release, and the newest Wi-Fi firmware a T2 Mac
+    # can be given: 9.30.514.0.32.5.94 on BCM4364B3 against sonoma's
+    # 9.30.503.0.32.5.92. Tahoe has DROPPED the Wi-Fi firmware for brcmfmac4355c1
+    # (MacBookPro15,x) and brcmfmac4377b3 (MacBookPro16,2/16,3) - only the
+    # brcmbt4377b3 Bluetooth pair survives, which is no use without Wi-Fi. Hence
+    # an option, not the default.
+    #
+    # Unlike the entries above this one cannot be pinned by board: `default`
+    # yields the OS the machine shipped with (Catalina here), and no Intel Mac
+    # ever shipped with Tahoe, so only `latest` reaches it. `latest` tracks
+    # Apple, so a 26.x recovery refresh will break this hash; the fix is to
+    # re-pin it. macrecovery's -os takes only {default,latest}, so there is no
+    # way to name the build (currently 140-93589).
+    tahoe = {
+      boardId = "Mac-E1008331FDC96864"; # MacBookPro16,1
+      mlb = "00000000000000000";
+      osType = "latest";
+      hash = "sha256-kLDFAF1oc5BEazLsAFYxdaq+TO5nyTdWT3DBAZyXm8Q=";
+    };
   };
 in
 
