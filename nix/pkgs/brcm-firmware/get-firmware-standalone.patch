@@ -1,5 +1,5 @@
 diff --git a/asahi_firmware/bluetooth.py b/asahi_firmware/bluetooth.py
-index 0934225..3eaa442 100644
+index b3fb34e..eb91a55 100644
 --- a/asahi_firmware/bluetooth.py
 +++ b/asahi_firmware/bluetooth.py
 @@ -1,8 +1,25 @@
@@ -29,7 +29,7 @@ index 0934225..3eaa442 100644
  
  log = logging.getLogger("asahi_firmware.bluetooth")
  
-@@ -127,16 +144,16 @@ class BluetoothFWCollection(object):
+@@ -128,16 +145,16 @@ class BluetoothFWCollection(object):
  
  if __name__ == "__main__":
      col = BluetoothFWCollection(sys.argv[1])
@@ -60,7 +60,7 @@ index 0934225..3eaa442 100644
 +                f.write(data.data)
 +            hashes[data.sha] = path
 diff --git a/asahi_firmware/wifi.py b/asahi_firmware/wifi.py
-index 346965c..261aa32 100644
+index af5abee..7e7448a 100644
 --- a/asahi_firmware/wifi.py
 +++ b/asahi_firmware/wifi.py
 @@ -1,6 +1,24 @@
@@ -99,7 +99,7 @@ index 346965c..261aa32 100644
              if "perf" in dirnames:
                  dirnames.remove("perf")
              if "assert" in dirnames:
-@@ -141,18 +161,16 @@ class WiFiFWCollection(object):
+@@ -149,18 +169,16 @@ class WiFiFWCollection(object):
  
  if __name__ == "__main__":
      col = WiFiFWCollection(sys.argv[1])

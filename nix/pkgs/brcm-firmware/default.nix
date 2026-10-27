@@ -73,7 +73,12 @@ vmTools.runInLinuxVM (
       ${kmod}/bin/modprobe loop
       ${kmod}/bin/modprobe hfsplus
 
-      imgdir=$(mktemp -d)
+      # Deterministic, not mktemp: get-wifi derives each firmware file's identity
+      # from its path relative to this directory, so a random name makes the
+      # parse (and historically, the build) depend on the draw. We are alone in
+      # a throwaway VM, so there is nothing to collide with.
+      imgdir=/tmp/img
+      mkdir -p $imgdir
       loopdev=$(losetup -f | cut -d "/" -f 3)
       losetup -P $loopdev $src
       loopdev_partition=/dev/$(lsblk -o KNAME,TYPE,MOUNTPOINT -n | grep $loopdev | tail -1 | awk '{print $1}')
