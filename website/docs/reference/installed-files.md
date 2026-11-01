@@ -24,6 +24,18 @@ checkout with an unexpected Git remote. Its persistent files are:
 ~/.local/state/kait2en/install.log
 ```
 
+Every installer step and app records the commit it was last installed from,
+one file per step or app:
+
+```text
+/var/lib/kait2en-installer/applied/<step>
+/var/lib/kait2en-installer/applied/app:<app>
+```
+
+The experimental KaiT2en Update app compares these records with GitHub. It
+uses `scripts/fedora/update-map` from the checkout to tell which steps and
+apps have to run again. See [Updating](../post-install/updating.md).
+
 ## Multicall commands
 
 `install.sh` installs a helper script and links the short commands to it. The
@@ -216,19 +228,21 @@ audio behavior and diagnostics.
 | `/usr/local/libexec/kait2en/kait2en-suspend.sh` | Handles the BCM4377 suspend workaround described below |
 | `/etc/systemd/system/kait2en-macos-mount.service` | Mounts the readable macOS volumes read-only under `/media/macOS` at boot |
 | `/usr/local/libexec/kait2en/kait2en-macos-mount` | Finds the readable volumes in the internal APFS container and mounts them as subdirectories by role |
+| `/etc/udev/rules.d/90-kait2en-macos.rules` | Hides the internal APFS partition from file managers, the volumes are reached through `/media/macOS` |
 | `/etc/systemd/system/t2-services-suspend.service` | Runs feature sleep/resume hooks around sleep |
 | `/usr/local/libexec/t2-services/t2-ncm-sleep` | Runs installed feature hooks before sleep and after resume |
 | `/usr/local/libexec/t2-services/sleep.d/t2-ave` | Closes/reopens sessions only when the AVE daemon is running |
 | `/etc/systemd/system/kait2en-t2-remote.service` | Loads `t2bce_ave` and runs `t2remote`, which holds the bridgeOS services Linux uses, currently `com.apple.aveservice` for the video encoder |
 | `/usr/local/bin/t2remote` | RemoteXPC service manager; `t2remote status` shows the live services. Listens on `/run/t2remote.sock` |
-| NetworkManager profile `Apple T2 Bridge` | IPv6 link-local connection to the T2 over its internal CDC-NCM interface, bound to the interface's MAC address. Replaces the earlier `t2_ncm` udev rule |
+| `/etc/NetworkManager/conf.d/10-t2-services.conf` | Keeps NetworkManager away from the internal CDC-NCM interface to the T2, so it stays up until the suspend hooks have closed their T2 sessions. Replaces the former `Apple T2 Bridge` profile |
+| `/usr/local/lib/udev/rules.d/90-t2-services-ncm.rules` | Brings the internal CDC-NCM interface up with an IPv6 link-local address |
 | `/etc/modprobe.d/kait2en-silent-blacklist.conf` | Silently ignores attempts to load drivers replaced by KAIT2EN modules |
-| `/usr/share/plymouth/themes/kait2en/` | macOS-style boot splash with a KAIT2EN logo |
+| `/usr/share/plymouth/themes/kait2en/` | Boot splash in the KaiT2en Vornehm style, the silver kanji above a slim progress bar |
 | `/etc/plymouth/plymouthd.conf` | Selects the KAIT2EN theme, pins `DeviceScale=1` and sets `UseSimpledrm=0` so the splash does not resize when i915 replaces the 2880x1800 EFI framebuffer |
-| `/usr/share/pixmaps/kait2en-gdm-logo.png` | White and red KAIT2EN logo shown by GDM |
+| `/usr/share/pixmaps/kait2en-gdm-logo.png` | Silver and red KAIT2EN logo shown by GDM |
 | `/etc/dconf/db/gdm.d/00-kait2en` | Configures the GDM logo and solid black login background |
 | `/usr/share/backgrounds/kait2en/gdm-black.png` | Black GDM background image |
-| `/usr/share/gnome-shell/gnome-shell-theme.gresource` | GNOME Shell theme patched so the GDM and lock-screen shield render black |
+| `/usr/share/gnome-shell/gnome-shell-theme.gresource` | GNOME Shell theme patched so the GDM and lock-screen shield render black and the login controls get the KaiT2en Vornehm glass |
 | `/etc/dracut.conf.d/90-kait2en-input.conf` | Keeps the internal keyboard drivers, `t2smc` and `t2sbs` in initramfs images built during kernel updates |
 | `/boot/initramfs-<running-kernel>.img` | Rebuilt by Dracut after modules and ACPI handling are complete |
 
@@ -261,8 +275,9 @@ marker contains the table's current SHA-256 checksum. Existing unmarked tables
 and modified managed tables are left unchanged and reported as conflicts.
 
 `kait2en-macos-mount.service` is enabled on every installation. At boot the
-helper loads `apfs` and probes each volume of every internal APFS partition
-read-only in turn. Every readable volume is mounted as a subdirectory of the
+helper loads `apfs` and reads the volume list and the encryption flags from the
+container superblock of every internal APFS partition. Each unencrypted volume
+is probed read-only in turn. Every readable volume is mounted as a subdirectory of the
 single `/media/macOS` directory, named by the role detected from its contents,
 so the whole macOS install is browsed from one place:
 
@@ -275,7 +290,9 @@ so the whole macOS install is browsed from one place:
 
 The probe runs on every boot because the volume order differs between Macs and
 macOS versions. The macOS Data volume is encrypted and stays unmounted, and the
-VM volume is left out.
+VM volume is left out. `/media/macOS` itself is a small tmpfs marked
+`x-gvfs-show`, and the volume mounts are marked `x-gvfs-hide`, so file managers
+list one macOS entry with the volumes as folders.
 
 ## Apple firmware from the installer USB drive
 
@@ -304,16 +321,18 @@ outcome of the Bluetooth step is recorded in the installed system at:
 
 ## Applications
 
-`t2-fan-control`, `t2-smc-control`, `t2-power-explorer`, `t2-debug`,
-`t2-zone-power`, `t2-journal`, `kait2en-touchbar`, `kernel-builder`, and
-`t2-power-tune` are installed system-wide under `/usr/local`. `kait2en-touchbar` is optional and
-only installed when selected at the start of the installation.
+`t2-fan-control`, `t2-smc-control`, `t2-power-explorer`, `t2-debug`, `t2-airshare`,
+`t2-drop`, `t2-zone-power`, `t2-journal`, `t2-kbd-backlight`, `kait2en-touchbar`, `kernel-builder`,
+`t2-power-tune` and `kait2en-update` are installed system-wide under `/usr/local`. `kait2en-touchbar` and
+`t2-autobrightness` are optional and only installed when selected at the start
+of the installation.
 
 MacBookPro15,1, MacBookPro16,1 and MacBookPro16,4 get
 `t2-hybrid-gpu-control`; other MacBook Pro models with Intel and AMD display
 devices get `t2-dgpu-control`.
 All KAIT2EN desktop applications use the shared header wordmark at
-`/usr/local/share/kait2en/kait2en-wordmark.png`.
+`/usr/local/share/kait2en/kait2en-wordmark.png` in the dark style and
+`/usr/local/share/kait2en/kait2en-wordmark-light.png` in the light style.
 
 | Application | Installed files |
 | --- | --- |
@@ -325,13 +344,21 @@ All KAIT2EN desktop applications use the shared header wordmark at
 | T2 Kernel Builder | `/usr/local/bin/t2-kernel-builder`, `/usr/local/libexec/t2-kernel-builder-cleanup`, `/usr/local/libexec/t2-kernel-builder/build.sh`, `/usr/local/libexec/t2-kernel-builder/configs/*.config`, `/usr/local/share/applications/org.t2kernelbuilder.gtk.desktop`, `/usr/local/share/icons/hicolor/scalable/apps/org.t2kernelbuilder.gtk.svg`, `/usr/local/share/polkit-1/actions/org.t2kernelbuilder.gtk.policy` |
 | T2 Power Tune | `/usr/local/bin/t2-power-tune`, `/usr/local/libexec/t2-power-tune-helper`, `/usr/local/libexec/t2-power-tune-status`, `/usr/local/share/applications/org.t2powertune.gtk.desktop`, `/usr/local/share/icons/hicolor/scalable/apps/org.t2powertune.gtk.svg`, `/usr/share/polkit-1/actions/org.t2powertune.policy` |
 | T2 Force Click | `/usr/local/bin/t2-force-click`, `/usr/local/share/applications/org.t2forceclick.gtk.desktop`, `/usr/local/share/icons/hicolor/scalable/apps/org.t2forceclick.gtk.svg`, `/usr/local/lib/systemd/system/t2-force-click.service` |
+| KaiT2en Update | `/usr/local/bin/kait2en-update`, `/usr/local/libexec/kait2en-update-helper`, `/usr/local/share/applications/org.kait2enupdate.gtk.desktop`, `/usr/local/share/icons/hicolor/scalable/apps/org.kait2enupdate.gtk.svg`, `/usr/share/polkit-1/actions/org.kait2enupdate.policy` |
 | T2 Debug | `/usr/local/bin/t2-debug`, `/usr/local/bin/t2debug`, `/usr/local/share/applications/org.t2debug.gtk.desktop`, `/usr/local/share/icons/hicolor/scalable/apps/org.t2debug.gtk.svg` |
+| T2 AirShare | `/usr/local/bin/t2-airshare`, `/usr/local/bin/t2airshare`, `/usr/local/share/applications/org.t2airshare.gtk.desktop`, `/usr/local/share/icons/hicolor/scalable/apps/org.t2airshare.gtk.svg`, `/usr/local/lib/systemd/user/t2-airshare.service`, `/usr/local/share/applications/org.t2airshare.send.desktop`, `/usr/local/share/kio/servicemenus/t2-airshare-send.desktop`, `/usr/local/share/nemo/actions/t2-airshare-send.nemo_action`, `/usr/local/share/nautilus-python/extensions/t2-airshare-send.py`, `/usr/local/share/licenses/t2-airshare/`, per user `~/.config/t2-airshare/config.toml`. On systems with Nautilus the package `nautilus-python` |
+| T2 Drop, the AirDrop service of T2 AirShare | `/usr/local/bin/t2drop`, `/usr/local/lib/systemd/system/t2-drop.service` (started by D-Bus activation), `/usr/share/dbus-1/system.d/org.t2drop.conf`, `/usr/local/share/dbus-1/system-services/org.t2drop.service` |
+| T2 Keyboard Backlight | `/usr/local/bin/t2-kbd-backlight`, `/usr/local/lib/systemd/system/t2-kbd-backlight.service`, `/etc/kait2en/kbd-backlight.toml`. MacBooks only |
 | T2 Touch Bar | `/usr/local/bin/kait2en-touchbar`, `/usr/local/lib/systemd/user/kait2en-touchbar.service`, `/usr/local/lib/systemd/system/kait2en-touchbar-attach.service`, `/usr/local/lib/udev/rules.d/99-zz-kait2en-touchbar.rules`, `/etc/kait2en/touchbar.toml`, `/usr/local/share/licenses/kait2en-touchbar/THIRD-PARTY-NOTICES.md` |
+| Automatic brightness | `/usr/local/bin/t2-autobrightness`, `/usr/local/lib/systemd/user/kait2en-t2-autobrightness.service` (enabled with `--global`), `/usr/local/share/gnome-shell/extensions/kait2en-autobrightness@kait2en/`, per user `~/.local/state/t2-autobrightness/curve` and, while it runs, `~/.local/state/t2-autobrightness/gnome-settings` |
 | T2 Hybrid GPU Control | `/usr/local/bin/t2-hybrid-gpu-control`, `/usr/local/libexec/t2-hybrid-gpu-control-helper`, `/usr/local/libexec/t2-hybrid-gpu-control-status`, `/usr/local/share/applications/org.t2hybridgpucontrol.gtk.desktop`, `/usr/local/share/icons/hicolor/scalable/apps/org.t2hybridgpucontrol.gtk.svg`, `/usr/share/polkit-1/actions/org.t2hybridgpucontrol.gtk.policy`, `/usr/share/polkit-1/actions/org.t2hybridgpucontrol.gtk.status.policy`, `/etc/environment.d/90-kait2en-gsk-renderer.conf` |
 | T2 GPU Control | `/usr/local/bin/t2-dgpu-control`, `/usr/local/libexec/t2-dgpu-control-helper`, `/usr/local/libexec/t2-dgpu-control-status`, `/usr/local/share/applications/org.t2dgpucontrol.gtk.desktop`, `/usr/local/share/icons/hicolor/scalable/apps/org.t2dgpucontrol.gtk.svg`, `/usr/local/lib/systemd/system/kait2en-dgpu-off.service`, `/usr/local/lib/systemd/system/kait2en-dgpu-suspend.service`, `/usr/local/lib/systemd/system/kait2en-amdgpu-profile.service`, `/usr/local/lib/systemd/system/kait2en-amdgpu-profile-resume.service`, `/usr/share/polkit-1/actions/org.t2dgpucontrol.gtk.policy`, `/usr/share/polkit-1/actions/org.t2dgpucontrol.gtk.status.policy` |
 
 T2 Fan Control's service starts immediately and persists fan curves across
-boot and resume. T2 Hybrid GPU Control does not install system services.
+boot and resume. `t2-drop.service` is not enabled. D-Bus starts it when
+T2 AirShare receives or sends over AirDrop, it runs as root because AWDL needs
+CAP_NET_ADMIN, stays while T2 AirShare is visible and exits a minute after
+the last caller. T2 Hybrid GPU Control does not install system services.
 T2 GPU Control enables its units only when the corresponding options are
 applied in the app. Both privileged helpers validate the GPU layout and accept
 only the fixed operations exposed by their UI.
@@ -390,7 +417,7 @@ cache of recently discovered RemoteXPC ports for each desktop user:
 
 `$XDG_STATE_HOME` replaces `~/.local/state` when it is set. The snapshot is
 created on the first query or explicit refresh and is atomically replaced only
-after a successful download and parse. See [T2 Journal](../post-install/kait2en-applications.md#t2-journal)
+after a successful download and parse. See [T2 Journal](../post-install/applications/t2-journal.md)
 for the required network setup.
 
 T2 Kernel Builder keeps downloaded sources, build trees and completed-build

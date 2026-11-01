@@ -64,8 +64,14 @@ skipping the track. A tap still skips.
 
 When a media player starts a new track while the bar is dark, "Artist – Title"
 fades in for five seconds with previous/next keys at both ends, so an unwanted
-track can be skipped without waking the bar. `show_track_changes = false`
-turns this off.
+track can be skipped without waking the bar. A touch on the title pauses.
+Afterwards, as long as something plays, a play triangle as thin as the key
+outlines and as bright as the key glyphs sits in the middle of the bar, with
+a light running clockwise around its edges. A tap on it brings the overlay
+back for five seconds, and every skip keeps it five seconds more. Holding it
+pauses. Two bars take its place then, shown and faded along with the escape
+key, and a tap on them plays on. The triangle is gone while playback pauses
+or the screen is locked or blanked. `show_track_changes = false` turns both off.
 
 Accepted key presses use `t2_trackpad_actuator` to give a bit of haptic feedback.
 Set `haptic_touch_up = false` in the Touch Bar config to actuate only on
@@ -75,14 +81,12 @@ The panel itself only has two brightness steps. The key glyphs are therefore
 dimmed in software to follow the keyboard backlight, so the bar and the keys
 look alike. A readable minimum remains while the keyboard backlight is off.
 
-Keyboard, trackpad and Touch Bar activity show the escape key and restore the
-keyboard backlight to its most recently selected level. After 30 seconds
-without activity, the daemon reads and remembers the current user level, then
-turns off both backlights. Input is handled through libinput events. The daemon
-does not poll while idle. The escape key and keyboard backlight fade over 700 ms.
-Set `activity_backlight = false` to turn this
-behavior off, or change `activity_timeout_ms` (5,000–300,000 ms) to adjust the
-idle period.
+Keyboard, trackpad and Touch Bar activity show the escape key on the dark bar.
+It fades in over 500 ms and fades out over 700 ms after 30 seconds without
+activity. Set `activity_escape = false` to turn this off, or change
+`activity_timeout_ms` (5,000–300,000 ms) to adjust the idle period. The
+keyboard backlight idle timeout is a separate daemon, see
+[t2-kbd-backlight](../t2-kbd-backlight/README.md).
 
 ## Installation
 

@@ -1,4 +1,4 @@
-# How to update
+# Updating
 
 KAIT2EN is meant to disappear. It's part of the concept. It serves the purpose
 of upstreaming code fixes. Every module and fix that gets upstreamed will disappear from
@@ -40,6 +40,32 @@ sudo ./install.sh
 This will run the installer and update your KAIT2EN installation just like
 `kait2en-install` would do.
 
+### KaiT2en Update (experimental)
+
+KaiT2en Update is an app that installs only what changed since your last
+update. It is experimental. Everything above keeps working as before, and
+`kait2en-install` stays the recommended way to update.
+
+Open **KaiT2en Update** from the app drawer. It fetches the latest code from
+GitHub and lists the installer steps and apps whose sources changed. A change
+to a kernel module only rebuilds the DKMS modules and the initramfs, a change
+to one app only rebuilds that app. Changes to the website or the docs install
+nothing.
+
+Uncheck what you want to skip and press **Update**. Your password is asked
+once. Restart when the app tells you so. When the installer itself changed,
+the app offers **Install Everything**, which runs the full installer like
+`kait2en-install`.
+
+Every step records the commit it was installed from in
+`/var/lib/kait2en-installer/applied/`. Installations from before the app have
+no records yet. The app then compares with your local checkout, and the first
+update from the app writes the records.
+
+The optional parts, T2 Touch Bar, Automatic brightness and KaiT2en Vornehm,
+are never added or removed by an update. Switch them in the Optional section of the app and
+press **Update**.
+
 ### Hybrid graphics and kernel updates
 
 On a MacBookPro15,1, 16,1 or 16,4, the patched graphics driver is rebuilt
@@ -64,9 +90,9 @@ You just update Fedora like everyone else. DKMS will notice and recompile our mo
 latest kernel. On Macs that use the patched AMDGPU module (MacBookPro15,1, 16,1, 16,4 and the 5K
 iMacs), a KAIT2EN hook also rebuilds it for the new kernel. This needs network access and makes
 kernel updates take a few minutes longer. dnf stays quiet meanwhile; the build log is in
-`/var/log/kait2en-gpu-runtime-pm.log`. See [How to configure GPUs](configuring-gpus.md) if it fails. It's always worth visiting the [KAIT2EN community on Discord](https://discord.gg/AGfjRk4ydj) or [Matrix](https://matrix.to/#/%23kait2en:matrix.org) to make sure you won't run into issues like kernel regressions.
+`/var/log/kait2en-gpu-runtime-pm.log`. See [Configuring GPUs](configuring-gpus.md) if it fails. It's always worth visiting the [KAIT2EN community on Discord](https://discord.gg/AGfjRk4ydj) or [Matrix](https://matrix.to/#/%23kait2en:matrix.org) to make sure you won't run into issues like kernel regressions.
 
-## So you messed up?
+## Repairing a broken kernel update
 
 You can mess up DKMS when upgrading the kernel. For example when interrupting DKMS while the new Kernel is booting.
 Then you are left with half broken KAIT2EN modules. To repair this, just boot into an older kernel and clean up the new.
@@ -91,7 +117,7 @@ The rescue tool finds and mounts your Fedora installation, chroots you into it,
 and lets you rebuild the initramfs, verify the T2 input drivers, or choose the
 default boot entry.
 
-## Murphy's law: We **WILL** mess up!
+## When we mess up
 
 We are humans. We will mess up at some point. We recommend not to update when
 you don't have an external keyboard/mouse around. Like when you are travelling.

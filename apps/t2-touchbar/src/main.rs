@@ -2,6 +2,7 @@
 
 mod backlight;
 mod config;
+mod cue;
 mod display;
 mod gesture;
 mod haptic;
@@ -12,6 +13,7 @@ mod levels;
 mod mpris;
 mod policy;
 mod renderer;
+mod screensaver;
 mod touchid;
 mod usb;
 
@@ -42,15 +44,16 @@ use libc::{O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY, pollfd};
 
 use backlight::Backlight;
 use config::{Config, state_path};
+use cue::Cue;
 use display::Display;
 use gesture::{Swipe, SwipeKind};
 use haptic::Haptic;
 use keyboard::VirtualKeyboard;
 use keys::{CustomAction, CustomKey};
 use levels::{Level, Reader as LevelReader};
-use mpris::{Mpris, Track};
+use mpris::{MediaEvent, Mpris, Track};
 use policy::{Mode, PersistentState, TimeoutLearner};
-use renderer::{Action, Canvas, Layout, LevelKind, TrackLayout};
+use renderer::{Action, Canvas, CueGlyph, CueLayout, Layout, LevelKind, TrackLayout};
 use touchid::TouchIdState;
 
 /// How long the esc key stays lit after it was used on the dark bar, so even
@@ -60,7 +63,9 @@ const ESC_LINGER_MS: u64 = 150;
 const LEVEL_LINGER_MS: u64 = 700;
 const LEVEL_FADE_MS: u64 = 350;
 const LEVEL_FRAME_MS: u64 = 33;
-const ACTIVITY_FADE_MS: u64 = 700;
+/// The esc key comes back quicker than it leaves.
+const ACTIVITY_FADE_IN_MS: u64 = 500;
+const ACTIVITY_FADE_OUT_MS: u64 = 700;
 const ACTIVITY_FRAME_MS: u64 = 33;
 /// The desktop applies a volume or brightness key asynchronously, so the
 /// value is read back repeatedly for a short while after each step.
@@ -132,6 +137,9 @@ enum Contact {
     MediaHold(usize),
     /// A key of the track overlay on the dark bar; `true` is next.
     TrackKey(bool),
+    /// The play cue on the dark bar: a tap brings the track overlay back,
+    /// a long press pauses.
+    Cue,
 }
 
 /// Crossfade from the previous row to the current one.
@@ -159,13 +167,6 @@ struct TrackToast {
     pressed: Option<bool>,
 }
 
-struct BacklightFade {
-    start_ms: u64,
-    next_ms: u64,
-    from: u32,
-    to: u32,
-}
-
 struct EscapeFade {
     start_ms: u64,
     next_ms: u64,
@@ -190,6 +191,10 @@ struct PendingTouch {
     deadline_ms: u64,
     dark: bool,
     button: Option<usize>,
+    /// Landed on the play cue of the dark bar.
+    cue: bool,
+    /// Landed on the title of the track overlay.
+    title: bool,
 }
 
 struct Runtime {
@@ -232,12 +237,7 @@ struct Runtime {
     /// The stop the level sits at was already felt as a firm click.
     level_stop_felt: bool,
     activity_deadline_ms: Option<u64>,
-    activity_dimmed: bool,
-    activity_restore_brightness: Option<u32>,
-    activity_max_brightness: Option<u32>,
     activity_esc_shown: bool,
-    activity_current_brightness: Option<u32>,
-    backlight_fade: Option<BacklightFade>,
     escape_opacity: f32,
     escape_fade: Option<EscapeFade>,
     /// Last values seen per kind, shown until a fresh read arrives.
@@ -248,6 +248,21 @@ struct Runtime {
     media_hold: Option<MediaHold>,
     mpris: Mpris,
     toast: Option<TrackToast>,
+    /// The track last reported as playing, for the overlay the cue brings
+    /// back.
+    track: Option<Track>,
+    playing: bool,
+    paused: bool,
+    /// Paused by a long press on the cue, and not playing since. Pause bars
+    /// show with the activity esc key then.
+    paused_here: bool,
+    /// When holding the cue pauses.
+    cue_hold: Option<u64>,
+    /// The desktop has locked or blanked the screen.
+    screen_off: bool,
+    cue: Cue,
+    /// The next step of the play cue, set while it shows.
+    cue_next_ms: Option<u64>,
     layer_fade: Option<LayerFade>,
     /// The blended frame while a crossfade runs.
     blended: Vec<u32>,
@@ -286,16 +301,7 @@ impl Runtime {
         let haptic = Haptic::open(config.haptic_feedback, config.haptic_touch_up);
         let (level_reader, level_wake) = LevelReader::spawn()?;
         level_wake.set_nonblocking(true)?;
-        let initial_keyboard_brightness = config
-            .activity_backlight
-            .then(|| kbdlight::brightness().ok())
-            .flatten();
-        let activity_restore_brightness =
-            initial_keyboard_brightness.filter(|brightness| *brightness > 0);
-        let activity_dimmed = config.activity_backlight && initial_keyboard_brightness == Some(0);
-        let activity_deadline_ms = config
-            .activity_backlight
-            .then_some(config.activity_timeout_ms);
+        let activity_deadline_ms = config.activity_escape.then_some(config.activity_timeout_ms);
         Ok(Self {
             config,
             state,
@@ -327,12 +333,7 @@ impl Runtime {
             level_stepped: false,
             level_stop_felt: false,
             activity_deadline_ms,
-            activity_dimmed,
-            activity_restore_brightness,
-            activity_max_brightness: None,
             activity_esc_shown: false,
-            activity_current_brightness: initial_keyboard_brightness,
-            backlight_fade: None,
             escape_opacity: 0.0,
             escape_fade: None,
             level_cache: [Level::default(); 2],
@@ -342,6 +343,14 @@ impl Runtime {
             media_hold: None,
             mpris: Mpris::default(),
             toast: None,
+            track: None,
+            playing: false,
+            paused: false,
+            paused_here: false,
+            cue_hold: None,
+            screen_off: false,
+            cue: Cue::new(),
+            cue_next_ms: None,
             layer_fade: None,
             blended: Vec::new(),
             touches_armed: true,
@@ -430,6 +439,7 @@ impl Runtime {
         }
         self.visible = true;
         self.overlay_shown = false;
+        self.cue_next_ms = None;
         self.activity_esc_shown = false;
         self.escape_fade = None;
         self.escape_opacity = 0.0;
@@ -458,17 +468,12 @@ impl Runtime {
     fn go_dark_inner(&mut self, learned_off: bool, preserve_activity_esc: bool) -> Result<()> {
         let now = self.now_ms();
         let escape = (preserve_activity_esc
-            && self.config.activity_backlight
+            && self.config.activity_escape
             && self.touch_id == TouchIdState::Idle
             && self
                 .activity_deadline_ms
                 .is_some_and(|deadline| now < deadline))
-        .then(|| {
-            self.layout
-                .buttons
-                .iter()
-                .position(|button| button.action == Action::Key(Key::Esc))
-        })
+        .then(|| self.esc_index())
         .flatten();
         self.keyboard.release()?;
         self.active_button = None;
@@ -480,7 +485,6 @@ impl Runtime {
                 .auto_off(self.now_ms(), self.state.mode, &self.config);
         }
         self.visible = false;
-        self.overlay_shown = escape.is_some();
         self.activity_esc_shown = escape.is_some();
         self.escape_fade = None;
         self.escape_opacity = if escape.is_some() { 1.0 } else { 0.0 };
@@ -489,17 +493,10 @@ impl Runtime {
         self.level_poll_ms = None;
         self.toast = None;
         self.layer_fade = None;
-        if let Some(index) = escape {
-            self.canvas.single_key(&self.layout, index, false, 100);
-        } else {
-            self.canvas.clear();
-        }
-        self.display
-            .present(&self.canvas.pixels, self.canvas.width, self.canvas.height)?;
-        if escape.is_none() {
-            self.backlight.set(0)?;
-        }
-        Ok(())
+        // The cue starts over, and a bar left with nothing goes fully dark.
+        self.cue_next_ms = None;
+        self.overlay_shown = true;
+        self.render_quiet_dark()
     }
 
     fn clear_touches(&mut self) {
@@ -508,6 +505,7 @@ impl Runtime {
         self.pending = None;
         self.swipe = None;
         self.media_hold = None;
+        self.cue_hold = None;
     }
 
     fn touch_down(&mut self, slot: u32, x: f64, y: f64) -> Result<()> {
@@ -528,9 +526,9 @@ impl Runtime {
                 .buttons
                 .iter()
                 .position(|button| button.action == Action::Key(Key::Esc));
-            if let Some(index) = esc_index.filter(|&index| {
-                self.layout.hit(x, y, self.canvas.height) == Some(index)
-            }) {
+            if let Some(index) =
+                esc_index.filter(|&index| self.layout.hit(x, y, self.canvas.height) == Some(index))
+            {
                 self.active_button = Some(index);
                 self.contacts.insert(slot, Contact::TouchIdEsc(index));
                 self.render_touch_id(now)?;
@@ -552,6 +550,11 @@ impl Runtime {
             self.contacts.insert(slot, Contact::Cancelled);
             return Ok(());
         }
+        let mut title = false;
+        let cue = self.cue_frame().is_some() && {
+            let cue = self.cue_layout();
+            x >= f64::from(cue.left) && x < f64::from(cue.right)
+        };
         if !self.visible
             && let Some(toast) = self.toast.as_mut()
         {
@@ -568,8 +571,13 @@ impl Runtime {
                 self.contacts.insert(slot, Contact::TrackKey(forward));
                 return self.track_frame(now);
             }
-            // Anything else on the bar takes over from the overlay.
-            self.toast = None;
+            // The title stays until it is clear whether it is held.
+            if x >= f64::from(toast.layout.prev.1) && x < f64::from(toast.layout.next.0) {
+                title = true;
+            } else {
+                // Anything else on the bar takes over from the overlay.
+                self.toast = None;
+            }
         }
         let button = self.layout.hit(x, y, self.canvas.height);
         // The esc slot never moves, so it stays usable while the bar is dark.
@@ -583,6 +591,8 @@ impl Runtime {
             deadline_ms: now + self.config.two_finger_window_ms,
             dark: !self.visible,
             button,
+            cue,
+            title,
         });
         self.contacts.insert(slot, Contact::Pending);
         if let Some(index) = button {
@@ -662,6 +672,18 @@ impl Runtime {
             return Ok(());
         };
         self.pending = None;
+        if pending.dark && pending.cue {
+            // The action is decided on release or hold.
+            let touched = pending.deadline_ms - self.config.two_finger_window_ms;
+            self.contacts.insert(pending.slot, Contact::Cue);
+            self.cue_hold = Some(touched + MEDIA_HOLD_MS);
+            self.haptic.key_press();
+            return Ok(());
+        }
+        if pending.dark && pending.title {
+            self.contacts.insert(pending.slot, Contact::Cancelled);
+            return self.pause_here();
+        }
         if pending.dark && pending.button.is_some() {
             self.contacts.insert(pending.slot, Contact::DarkEsc);
             self.keyboard.press(Key::Esc)?;
@@ -700,21 +722,34 @@ impl Runtime {
 
     fn track_changed(&mut self, track: Track) -> Result<()> {
         let now = self.now_ms();
+        self.track = Some(track.clone());
         if let Some(toast) = self.toast.as_mut() {
             toast.track = track;
             toast.start_ms = now.saturating_sub(TRACK_FADE_MS);
             return self.track_frame(now);
         }
         // Only on a quiet dark bar: never over keys, gestures or Touch ID.
-        // The esc key from activity stays and is drawn alongside.
+        // The esc key from activity and the play cue may show.
         if self.visible
-            || (self.overlay_shown && !self.activity_esc_shown)
+            || (self.overlay_shown && !self.activity_esc_shown && self.cue_next_ms.is_none())
             || self.touch_id != TouchIdState::Idle
             || !self.contacts.is_empty()
         {
             return Ok(());
         }
+        self.show_track(track, now)
+    }
+
+    /// The play cue brings the track overlay back for another round.
+    fn show_cue_track(&mut self, now: u64) -> Result<()> {
+        let track = self.track.clone().unwrap_or_default();
+        self.show_track(track, now)
+    }
+
+    /// Fades the track overlay in, in place of the play cue.
+    fn show_track(&mut self, track: Track, now: u64) -> Result<()> {
         self.refresh_key_level();
+        self.cue_next_ms = None;
         self.toast = Some(TrackToast {
             track,
             start_ms: now,
@@ -750,7 +785,7 @@ impl Runtime {
         } else {
             self.toast = None;
             if self.activity_esc_shown {
-                return self.render_activity_esc();
+                return self.render_quiet_dark();
             }
             return self.hide_overlay();
         };
@@ -798,20 +833,23 @@ impl Runtime {
     fn show_dark_esc(&mut self, index: usize) -> Result<()> {
         self.refresh_key_level();
         self.level_kind = None;
-        self.activity_esc_shown = self.config.activity_backlight;
+        self.activity_esc_shown = self.config.activity_escape;
         self.escape_fade = None;
         self.escape_opacity = 1.0;
         self.level_fade_start_ms = None;
         self.level_frame_ms = None;
         self.toast = None;
         self.overlay_hide_ms = None;
-        self.canvas.single_key(&self.layout, index, true, 100);
+        self.sync_cue();
+        self.canvas
+            .dark(&self.layout, Some((index, true, 100)), self.cue_frame());
         self.present_overlay()
     }
 
     fn begin_level(&mut self, kind: LevelKind) -> Result<()> {
         self.refresh_key_level();
         self.toast = None;
+        self.cue_next_ms = None;
         self.level_kind = Some(kind);
         self.activity_esc_shown = false;
         self.escape_fade = None;
@@ -911,14 +949,187 @@ impl Runtime {
         self.activity_esc_shown = false;
         self.escape_fade = None;
         self.escape_opacity = 0.0;
-        if !self.overlay_shown || self.visible {
+        if self.visible {
             return Ok(());
         }
-        self.overlay_shown = false;
-        self.canvas.clear();
-        self.display
-            .present(&self.canvas.pixels, self.canvas.width, self.canvas.height)?;
-        self.backlight.set(0)
+        self.render_quiet_dark()
+    }
+
+    /// Redraws the dark bar outside its overlays: the activity esc key and
+    /// the play cue, or nothing at all.
+    fn render_quiet_dark(&mut self) -> Result<()> {
+        if self.toast.is_some() {
+            return self.track_frame(self.now_ms());
+        }
+        self.sync_cue();
+        let esc = self.activity_esc();
+        if esc.is_none() && self.cue_frame().is_none() {
+            if !self.overlay_shown {
+                return Ok(());
+            }
+            self.overlay_shown = false;
+            self.canvas.clear();
+            self.display
+                .present(&self.canvas.pixels, self.canvas.width, self.canvas.height)?;
+            return self.backlight.set(0);
+        }
+        self.canvas.dark(&self.layout, esc, self.cue_frame());
+        self.present_overlay()
+    }
+
+    /// Whether the play cue belongs on the bar: something plays, the screen
+    /// is on and the dark bar shows nothing else but the esc key.
+    fn cue_wanted(&self) -> bool {
+        self.playing && self.cue_place_free()
+    }
+
+    /// Pause bars after a long press paused, shown and faded along with the
+    /// activity esc key.
+    fn pause_wanted(&self) -> bool {
+        self.paused_here
+            && self.paused
+            && !self.playing
+            && (self.activity_esc_shown || !self.config.activity_escape)
+            && self.cue_place_free()
+    }
+
+    /// The screen is on and the dark bar shows nothing but the esc key.
+    fn cue_place_free(&self) -> bool {
+        self.config.show_track_changes
+            && !self.screen_off
+            && !self.visible
+            && self.touch_id == TouchIdState::Idle
+            && self.toast.is_none()
+            && self.level_kind.is_none()
+    }
+
+    /// Starts the cue from its first round when it appears, stops it when
+    /// it no longer belongs on the bar.
+    fn sync_cue(&mut self) {
+        if !self.cue_wanted() {
+            self.cue_next_ms = None;
+        } else if self.cue_next_ms.is_none() {
+            let now = self.now_ms();
+            self.cue = Cue::new();
+            self.cue_next_ms = Some(now + self.cue.hold_ms());
+        }
+    }
+
+    fn cue_frame(&self) -> Option<(CueLayout, CueGlyph)> {
+        let glyph = if self.cue_next_ms.is_some() {
+            CueGlyph::Play(self.cue.edges())
+        } else if self.pause_wanted() {
+            let fade = if self.config.activity_escape {
+                (self.escape_opacity * 100.0).round() as u32
+            } else {
+                100
+            };
+            CueGlyph::Pause(fade)
+        } else {
+            return None;
+        };
+        Some((self.cue_layout(), glyph))
+    }
+
+    /// A tap on the pause bars plays on, one on the triangle brings the
+    /// track overlay back.
+    fn cue_tap(&mut self, now: u64) -> Result<()> {
+        if matches!(self.cue_frame(), Some((_, CueGlyph::Pause(_)))) {
+            return self.play_pause();
+        }
+        self.show_cue_track(now)
+    }
+
+    /// Holding the cue pauses, holding the pause bars plays on.
+    fn cue_held(&mut self) -> Result<()> {
+        self.cue_hold = None;
+        if !self.playing {
+            self.haptic.firm();
+            return self.play_pause();
+        }
+        self.pause_here()
+    }
+
+    /// Pauses from the cue or the title of the track overlay.
+    fn pause_here(&mut self) -> Result<()> {
+        self.haptic.firm();
+        self.paused_here = true;
+        self.play_pause()?;
+        // The bars answer at once, along with the esc key, in place of the
+        // title.
+        self.toast = None;
+        self.show_activity_esc()?;
+        self.render_quiet_dark()
+    }
+
+    /// Goes through the desktop like the media keys do.
+    fn play_pause(&mut self) -> Result<()> {
+        self.keyboard.press(Key::PlayPause)?;
+        self.keyboard.release()
+    }
+
+    /// One key wide, in the middle of the bar, where the track overlay
+    /// puts its title.
+    fn cue_layout(&self) -> CueLayout {
+        let keys = self.track_keys();
+        let half = (keys.prev.1 - keys.prev.0) / 2;
+        let middle = self.canvas.width / 2;
+        CueLayout {
+            left: middle - half,
+            right: middle + half,
+        }
+    }
+
+    /// One step of the cue. Only its columns go to the panel.
+    fn cue_step(&mut self, now: u64) -> Result<()> {
+        if !self.cue_wanted() {
+            self.cue_next_ms = None;
+            return Ok(());
+        }
+        let before = self.cue.edges();
+        self.cue.advance();
+        self.cue_next_ms = Some(now + self.cue.hold_ms());
+        if self.cue.edges() == before {
+            return Ok(());
+        }
+        let esc = self.activity_esc();
+        let cue = self.cue_layout();
+        self.canvas.dark(&self.layout, esc, self.cue_frame());
+        self.display.present_columns(
+            &self.canvas.pixels,
+            self.canvas.width,
+            self.canvas.height,
+            cue.left,
+            cue.right,
+        )
+    }
+
+    /// Something started or stopped playing, or the screen turned on or off.
+    fn media_changed(&mut self) -> Result<()> {
+        if self.visible
+            || self.touch_id != TouchIdState::Idle
+            || self.toast.is_some()
+            || self.level_kind.is_some()
+        {
+            // Whatever shows now draws the cue once it ends.
+            return Ok(());
+        }
+        self.render_quiet_dark()
+    }
+
+    /// The activity esc key as drawn on the dark bar, with its opacity.
+    fn activity_esc(&self) -> Option<(usize, bool, u32)> {
+        self.activity_esc_shown
+            .then(|| self.esc_index())
+            .flatten()
+            .map(|index| (index, false, (self.escape_opacity * 100.0).round() as u32))
+    }
+
+    fn esc_index(&self) -> Option<usize> {
+        self.layout
+            .buttons
+            .iter()
+            .position(|button| button.action == Action::Key(Key::Esc))
     }
 
     fn poll_level(&mut self, now: u64) {
@@ -969,20 +1180,12 @@ impl Runtime {
     }
 
     fn keyboard_backlight_changed(&mut self) -> Result<()> {
-        if let Ok(brightness) = kbdlight::brightness() {
-            self.activity_current_brightness = Some(brightness);
-            if self.activity_dimmed && self.backlight_fade.is_none() && brightness > 0 {
-                self.activity_restore_brightness = Some(brightness);
-                self.activity_dimmed = false;
-                self.user_activity(self.now_ms(), true)?;
-            }
-        }
         let changed = self.refresh_key_level();
         if self.touch_id != TouchIdState::Idle {
             return Ok(());
         }
-        if self.activity_esc_shown && changed {
-            return self.render_activity_esc();
+        if (self.activity_esc_shown || self.cue_frame().is_some()) && changed {
+            return self.render_quiet_dark();
         }
         if !changed {
             return Ok(());
@@ -995,44 +1198,10 @@ impl Runtime {
     }
 
     fn user_activity(&mut self, now: u64, show_esc: bool) -> Result<()> {
-        if !self.config.activity_backlight {
+        if !self.config.activity_escape {
             return Ok(());
         }
         self.activity_deadline_ms = Some(now + self.config.activity_timeout_ms);
-        let fading_out = self
-            .backlight_fade
-            .as_ref()
-            .is_some_and(|fade| fade.to == 0);
-        if self.activity_dimmed || fading_out {
-            let brightness = match self.activity_restore_brightness {
-                Some(brightness) if brightness > 0 => Some(brightness),
-                _ => match self
-                    .activity_max_brightness
-                    .map(Ok)
-                    .unwrap_or_else(kbdlight::maximum_brightness)
-                {
-                    Ok(brightness) if brightness > 0 => {
-                        self.activity_max_brightness = Some(brightness);
-                        Some(brightness)
-                    }
-                    Ok(_) => None,
-                    Err(error) => {
-                        eprintln!("kait2en-touchbar: read maximum keyboard brightness: {error:#}");
-                        None
-                    }
-                },
-            };
-            if let Some(brightness) = brightness {
-                let already_fading_in = self
-                    .backlight_fade
-                    .as_ref()
-                    .is_some_and(|fade| fade.to == brightness && brightness > 0);
-                if !already_fading_in {
-                    let current = self.activity_current_brightness.unwrap_or(0);
-                    self.start_backlight_fade(now, current, brightness);
-                }
-            }
-        }
         if self.visible {
             self.deadline_ms = Some(now + self.state.learned(self.state.mode).timeout_ms);
         } else if show_esc && self.touch_id == TouchIdState::Idle {
@@ -1051,14 +1220,9 @@ impl Runtime {
             }
             return Ok(());
         }
-        let Some(index) = self
-            .layout
-            .buttons
-            .iter()
-            .position(|button| button.action == Action::Key(Key::Esc))
-        else {
+        if self.esc_index().is_none() {
             return Ok(());
-        };
+        }
         // A track overlay stays and draws the esc key with it.
         self.level_kind = None;
         self.overlay_hide_ms = None;
@@ -1067,7 +1231,7 @@ impl Runtime {
         self.refresh_key_level();
         self.activity_esc_shown = true;
         self.start_escape_fade(self.now_ms(), self.escape_opacity, 1.0);
-        self.render_activity_esc_with_index(index)
+        self.render_quiet_dark()
     }
 
     fn activity_timeout(&mut self) {
@@ -1077,39 +1241,9 @@ impl Runtime {
                 eprintln!("kait2en-touchbar: darken Touch Bar after inactivity: {error:#}");
             }
         }
-        match kbdlight::brightness() {
-            Ok(brightness) => {
-                self.activity_current_brightness = Some(brightness);
-                if brightness > 0 {
-                    self.activity_restore_brightness = Some(brightness);
-                    self.start_backlight_fade(self.now_ms(), brightness, 0);
-                } else {
-                    self.backlight_fade = None;
-                    self.activity_dimmed = true;
-                }
-            }
-            Err(error) => {
-                eprintln!("kait2en-touchbar: read keyboard brightness before dimming: {error:#}")
-            }
-        }
         if self.activity_esc_shown {
             self.start_escape_fade(self.now_ms(), self.escape_opacity, 0.0);
         }
-    }
-
-    fn start_backlight_fade(&mut self, now: u64, from: u32, to: u32) {
-        if from == to {
-            self.activity_current_brightness = Some(to);
-            self.activity_dimmed = to == 0;
-            self.backlight_fade = None;
-            return;
-        }
-        self.backlight_fade = Some(BacklightFade {
-            start_ms: now,
-            next_ms: now,
-            from,
-            to,
-        });
     }
 
     fn start_escape_fade(&mut self, now: u64, from: f32, to: f32) {
@@ -1126,61 +1260,6 @@ impl Runtime {
         });
     }
 
-    fn render_activity_esc(&mut self) -> Result<()> {
-        let Some(index) = self
-            .layout
-            .buttons
-            .iter()
-            .position(|button| button.action == Action::Key(Key::Esc))
-        else {
-            return Ok(());
-        };
-        self.render_activity_esc_with_index(index)
-    }
-
-    fn render_activity_esc_with_index(&mut self, index: usize) -> Result<()> {
-        if self.toast.is_some() {
-            return self.track_frame(self.now_ms());
-        }
-        self.canvas.single_key(
-            &self.layout,
-            index,
-            false,
-            (self.escape_opacity * 100.0).round() as u32,
-        );
-        self.present_overlay()
-    }
-
-    fn advance_backlight_fade(&mut self, now: u64) {
-        let Some(fade) = self.backlight_fade.as_mut() else {
-            return;
-        };
-        if now < fade.next_ms {
-            return;
-        }
-        let elapsed = now.saturating_sub(fade.start_ms).min(ACTIVITY_FADE_MS);
-        let progress = elapsed as f32 / ACTIVITY_FADE_MS as f32;
-        let eased = progress * progress * (3.0 - 2.0 * progress);
-        let value = (fade.from as f32 + (fade.to as f32 - fade.from as f32) * eased).round() as u32;
-        let target = fade.to;
-        fade.next_ms = now + ACTIVITY_FRAME_MS;
-        if self.activity_current_brightness != Some(value) {
-            match kbdlight::set_brightness(value) {
-                Ok(()) => self.activity_current_brightness = Some(value),
-                Err(error) => {
-                    eprintln!("kait2en-touchbar: fade keyboard backlight: {error:#}");
-                    self.backlight_fade = None;
-                    return;
-                }
-            }
-        }
-        if elapsed >= ACTIVITY_FADE_MS {
-            self.activity_current_brightness = Some(target);
-            self.activity_dimmed = target == 0;
-            self.backlight_fade = None;
-        }
-    }
-
     fn advance_escape_fade(&mut self, now: u64) -> Result<()> {
         let Some(fade) = self.escape_fade.as_mut() else {
             return Ok(());
@@ -1188,14 +1267,19 @@ impl Runtime {
         if now < fade.next_ms {
             return Ok(());
         }
-        let elapsed = now.saturating_sub(fade.start_ms).min(ACTIVITY_FADE_MS);
-        let progress = elapsed as f32 / ACTIVITY_FADE_MS as f32;
+        let duration = if fade.to > fade.from {
+            ACTIVITY_FADE_IN_MS
+        } else {
+            ACTIVITY_FADE_OUT_MS
+        };
+        let elapsed = now.saturating_sub(fade.start_ms).min(duration);
+        let progress = elapsed as f32 / duration as f32;
         let eased = progress * progress * (3.0 - 2.0 * progress);
         self.escape_opacity = fade.from + (fade.to - fade.from) * eased;
         let target = fade.to;
         fade.next_ms = now + ACTIVITY_FRAME_MS;
-        self.render_activity_esc()?;
-        if elapsed >= ACTIVITY_FADE_MS {
+        self.render_quiet_dark()?;
+        if elapsed >= duration {
             self.escape_opacity = target;
             self.escape_fade = None;
             if target <= 0.0 {
@@ -1209,21 +1293,6 @@ impl Runtime {
             }
         }
         Ok(())
-    }
-
-    fn restore_activity_backlight_on_exit(&mut self) {
-        if self.config.activity_backlight
-            && (self.activity_dimmed
-                || self
-                    .backlight_fade
-                    .as_ref()
-                    .is_some_and(|fade| fade.to == 0))
-            && let Some(brightness) = self.activity_restore_brightness
-        {
-            if let Err(error) = kbdlight::set_brightness(brightness) {
-                eprintln!("kait2en-touchbar: restore keyboard brightness on exit: {error:#}");
-            }
-        }
     }
 
     /// `Some(true)` for next, `Some(false)` for previous.
@@ -1316,6 +1385,16 @@ impl Runtime {
                 let Some(pending) = self.pending else {
                     return Ok(());
                 };
+                if pending.cue {
+                    let cue = self.cue_layout();
+                    if x < f64::from(cue.left) || x >= f64::from(cue.right) {
+                        // Slid off the cue: an ordinary wake touch.
+                        self.pending = Some(PendingTouch {
+                            cue: false,
+                            ..pending
+                        });
+                    }
+                }
                 if let Some(index) = pending.button
                     && self.layout.hit(x, y, self.canvas.height) != Some(index)
                 {
@@ -1357,6 +1436,15 @@ impl Runtime {
                     self.active_button = None;
                     self.contacts.insert(slot, Contact::Cancelled);
                     self.present_keys()?;
+                }
+                Ok(())
+            }
+            Some(Contact::Cue) => {
+                let cue = self.cue_layout();
+                if x < f64::from(cue.left) || x >= f64::from(cue.right) {
+                    // Slid off the cue: neither tap nor hold.
+                    self.cue_hold = None;
+                    self.contacts.insert(slot, Contact::Cancelled);
                 }
                 Ok(())
             }
@@ -1470,7 +1558,13 @@ impl Runtime {
             Some(Contact::Pending) => {
                 // Lifted within the window: a plain tap.
                 if let Some(pending) = self.pending.take() {
-                    if pending.dark && pending.button.is_some() {
+                    if pending.dark && pending.cue {
+                        self.haptic.key_press();
+                        self.haptic.key_release();
+                        self.cue_tap(now)?;
+                    } else if pending.dark && pending.title {
+                        self.pause_here()?;
+                    } else if pending.dark && pending.button.is_some() {
                         self.keyboard.press(Key::Esc)?;
                         self.keyboard.release()?;
                         self.haptic.key_press();
@@ -1520,9 +1614,16 @@ impl Runtime {
                 if self.activity_esc_shown {
                     self.escape_opacity = 1.0;
                     self.escape_fade = None;
-                    self.render_activity_esc()?;
+                    self.render_quiet_dark()?;
                 } else {
                     self.overlay_hide_ms = Some(now + ESC_LINGER_MS);
+                }
+            }
+            Some(Contact::Cue) => {
+                self.haptic.key_release();
+                // Released before the hold paused: a tap.
+                if self.cue_hold.take().is_some() {
+                    self.cue_tap(now)?;
                 }
             }
             Some(Contact::TrackKey(forward)) => {
@@ -1645,6 +1746,7 @@ impl Runtime {
     fn touch_id_changed(&mut self, state: TouchIdState) -> Result<()> {
         self.touch_id = state;
         self.layer_fade = None;
+        self.cue_next_ms = None;
         self.keyboard.release()?;
         self.active_button = None;
         self.clear_touches();
@@ -1694,7 +1796,8 @@ impl Runtime {
                     .is_some_and(|active_button| active_button.action == button.action)
             })
         });
-        self.canvas.touch_id(self.touch_id.as_str(), nudge, esc, active);
+        self.canvas
+            .touch_id(self.touch_id.as_str(), nudge, esc, active);
         self.display
             .present(&self.canvas.pixels, self.canvas.width, self.canvas.height)
     }
@@ -1752,7 +1855,6 @@ impl Runtime {
         {
             self.activity_timeout();
         }
-        self.advance_backlight_fade(now);
         self.advance_escape_fade(now)?;
         if self
             .media_hold
@@ -1760,6 +1862,12 @@ impl Runtime {
             .is_some_and(|hold| now >= hold.next_ms)
         {
             self.seek_step(now)?;
+        }
+        if self.cue_next_ms.is_some_and(|deadline| now >= deadline) {
+            self.cue_step(now)?;
+        }
+        if self.cue_hold.is_some_and(|deadline| now >= deadline) {
+            self.cue_held()?;
         }
         self.toggle_mode_if_due(now)?;
         if self.touch_id == TouchIdState::Idle
@@ -1821,11 +1929,14 @@ impl Runtime {
         if let Some(deadline) = self.activity_deadline_ms {
             deadlines.push(deadline);
         }
-        if let Some(fade) = &self.backlight_fade {
-            deadlines.push(fade.next_ms);
-        }
         if let Some(fade) = &self.escape_fade {
             deadlines.push(fade.next_ms);
+        }
+        if let Some(deadline) = self.cue_next_ms {
+            deadlines.push(deadline);
+        }
+        if let Some(deadline) = self.cue_hold {
+            deadlines.push(deadline);
         }
         deadlines
             .into_iter()
@@ -1932,7 +2043,15 @@ fn main() -> Result<()> {
     let mut kbd_wake = kbdlight::watch()?;
     kbd_wake.set_nonblocking(true)?;
     let tracks = if runtime.config.show_track_changes {
-        let (receiver, wake) = mpris::watch_tracks()?;
+        let (receiver, wake) = mpris::watch()?;
+        wake.set_nonblocking(true)?;
+        Some((receiver, wake))
+    } else {
+        None
+    };
+    // Only the play cue cares whether the screen is on.
+    let screen = if runtime.config.show_track_changes {
+        let (receiver, wake) = screensaver::watch()?;
         wake.set_nonblocking(true)?;
         Some((receiver, wake))
     } else {
@@ -1973,6 +2092,11 @@ fn main() -> Result<()> {
                 events: libc::POLLIN,
                 revents: 0,
             },
+            pollfd {
+                fd: screen.as_ref().map_or(-1, |(_, wake)| wake.as_raw_fd()),
+                events: libc::POLLIN,
+                revents: 0,
+            },
         ];
         let result = unsafe {
             libc::poll(
@@ -2004,8 +2128,29 @@ fn main() -> Result<()> {
         {
             let mut discard = [0u8; 64];
             while (&*wake).read(&mut discard).is_ok() {}
-            while let Ok(track) = receiver.try_recv() {
-                runtime.track_changed(track)?;
+            while let Ok(event) = receiver.try_recv() {
+                match event {
+                    MediaEvent::Track(track) => runtime.track_changed(track)?,
+                    MediaEvent::Status { playing, paused } => {
+                        runtime.playing = playing;
+                        runtime.paused = paused;
+                        if playing {
+                            runtime.paused_here = false;
+                        }
+                        runtime.media_changed()?;
+                    }
+                }
+            }
+        }
+
+        if poll_fds[6].revents & libc::POLLIN != 0
+            && let Some((receiver, wake)) = &screen
+        {
+            let mut discard = [0u8; 64];
+            while (&*wake).read(&mut discard).is_ok() {}
+            while let Ok(off) = receiver.try_recv() {
+                runtime.screen_off = off;
+                runtime.media_changed()?;
             }
         }
 
@@ -2057,7 +2202,7 @@ fn main() -> Result<()> {
                     Event::Device(DeviceEvent::Added(added)) => {
                         let device = added.device();
                         if !provides_fn(&device)
-                            && !(runtime.config.activity_backlight && provides_activity(&device))
+                            && !(runtime.config.activity_escape && provides_activity(&device))
                         {
                             let _ = device.config_send_events_set_mode(SendEventsMode::DISABLED);
                         }
@@ -2082,7 +2227,6 @@ fn main() -> Result<()> {
         runtime.flush_level()?;
     }
     runtime.go_dark(false)?;
-    runtime.restore_activity_backlight_on_exit();
     Ok(())
 }
 

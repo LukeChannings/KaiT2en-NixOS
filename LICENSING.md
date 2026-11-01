@@ -30,9 +30,9 @@ The GPL-3.0-or-later components carry an additional term under section 7(b):
 their author attribution must be preserved when the work is conveyed, and
 reproduced in the Appropriate Legal Notices displayed by works that contain it.
 Copyright of that userspace is held by André Eikmeyer
-<andre.eikmeyer@kait2en.org>, and by 4f1sh3r <git@syn-flut.de> for
-`t2-fan-control` and `t2-smc-control`. This is a reasonable attribution
-requirement and adds no restriction beyond section 7(b).
+<andre.eikmeyer@kait2en.org>, and by 4f1sh3r <git@syn-flut.de> for his
+contributions to `t2-fan-control` and `t2-smc-control`. This is a reasonable
+attribution requirement and adds no restriction beyond section 7(b).
 
 ## Other owners
 
@@ -45,6 +45,18 @@ requirement and adds no restriction beyond section 7(b).
   tiny-dfr. Its MIT notice is preserved in
   `apps/t2-touchbar/THIRD-PARTY-NOTICES.md`; the combined KAIT2EN program is
   distributed under GPL-3.0-or-later.
+- `apps/t2-airshare/proto/` holds the Nearby protobuf definitions, Apache-2.0
+  (Google LLC) and BSD-style (The Chromium Authors) with their license texts
+  next to them. Parts of `apps/t2-airshare/src/secure.rs`, `link.rs`,
+  `receive.rs`, `send.rs` and `discover.rs` are adapted from rquickshare
+  (GPL-3.0). The
+  notices are in `apps/t2-airshare/THIRD-PARTY-NOTICES.md`, the combined
+  KAIT2EN program is distributed under GPL-3.0-or-later.
+- The wallpapers in `assets/vornehm/backgrounds/` are from the BLACK
+  collection by Jean-Marc Denis (https://jmd.im/black), © Jean-Marc Denis.
+  They are not covered by the KaiT2en licenses. No redistribution license is
+  stated, they are shipped downscaled with credit in good faith and removed
+  on the artist's request. Details in `assets/vornehm/backgrounds/CREDITS.md`.
 
 ## Trademarks
 
