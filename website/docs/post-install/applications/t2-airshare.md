@@ -12,7 +12,9 @@ Quick Share. Receiving and sending work the same way for both.
 - To send, right-click files in the file manager and choose "Send with T2
   AirShare" (Files, Dolphin, Nemo), use "Open With" in other file managers,
   or drop files on the T2 AirShare window. Apple devices and Android phones
-  show up in the same list.
+  show up in the same list, each with AirDrop or Quick Share below its name.
+  A device that offers both shows up once with a choice, AirDrop first.
+  AirDrop only looks for devices while the send window has the focus.
 
 ## AirDrop
 
@@ -67,33 +69,29 @@ connection and the transfer moves there. The phone joins it on its own.
 - When the hotspot comes up and when it goes away again, the normal Wi-Fi
   connection of the Mac drops for one to three seconds.
 
-## Terminal
+## Terminal, for debugging only
 
-Both ways work from a terminal as well, as the normal user. `t2airshare`
-handles Quick Share, `t2drop` handles AirDrop through `t2-drop.service`.
+`t2airshare` (Quick Share) and `t2drop` (AirDrop through `t2-drop.service`)
+send and receive from a terminal. They are meant for debugging, not for
+everyday use. While T2 AirShare is visible, the terminal commands compete
+with it for the Bluetooth advertisements and the Quick Share ports, devices
+then show up late or not at all. Stop the user service first and start it
+again afterwards.
 
 ```bash
-# Quick Share: send files to the first phone found, or one whose name
-# contains the text after --to
-t2airshare send photo.jpg notes.pdf
+systemctl --user stop t2-airshare.service
+
 t2airshare send --to "S22" photo.jpg
-
-# Quick Share: receive until Ctrl+C, --yes accepts without asking
 t2airshare receive --dir ~/Incoming --yes
-
-# AirDrop: list the receivers nearby, then send to one of them
 t2drop list
 t2drop send --to "MacBook" photo.jpg
-
-# AirDrop: receive until Ctrl+C, --ble only becomes visible while a sender
-# nearby opens AirDrop, as macOS does
 t2drop receive --dir ~/Incoming --yes
+
+systemctl --user start t2-airshare.service
 ```
 
 `--name` sets the name the other device shows, the hostname by default.
-`--wait` sets how many seconds `send` and `list` look for devices. Stop the
-user service with `systemctl --user stop t2-airshare.service` before
-receiving from a terminal and start it again afterwards.
+`--wait` sets how many seconds `send` and `list` look for devices.
 
 ## Trusted devices
 
@@ -111,6 +109,9 @@ the service with
 ```bash
 systemctl --user disable --now t2-airshare.service
 ```
+
+AirDrop is a trademark of Apple Inc. Quick Share is a trademark of Google
+LLC. T2 AirShare is not affiliated with or endorsed by either.
 
 T2 AirShare was called T2 Share before AirDrop implementation. Updating
 moves its settings and trusted devices over and switches the user service
