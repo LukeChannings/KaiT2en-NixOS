@@ -142,6 +142,7 @@
             t2-autobrightness = ./nix/modules/t2-autobrightness;
             t2-sidecar = ./nix/modules/t2-sidecar;
             t2-drop = ./nix/modules/t2-drop;
+            t2-airshare = ./nix/modules/t2-airshare;
             kait2en-utilities = ./nix/modules/kait2en-utilities;
           };
 

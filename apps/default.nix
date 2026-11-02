@@ -27,6 +27,7 @@ in
   t2-debug = callPackage ./t2-debug/package.nix { inherit branding; };
   t2-sidecar = callPackage ./t2-sidecar/package.nix { };
   t2-drop = callPackage ./t2-drop/package.nix { };
+  t2-airshare = callPackage ./t2-airshare/package.nix { inherit branding; };
 
   # dsp/ (host-side PipeWire/WirePlumber speaker + mic DSP).
   t2-dsp = callPackage ../dsp/package.nix { };

@@ -38,6 +38,7 @@
     ./t2-autobrightness
     ./t2-sidecar
     ./t2-drop
+    ./t2-airshare
     ./kait2en-utilities
   ];
 
