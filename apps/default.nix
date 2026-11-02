@@ -33,4 +33,5 @@ in
   t2-journal = callPackage ../t2-services/t2-journal/package.nix { };
   t2-ave = callPackage ../t2-services/t2-ave/package.nix { };
   t2-touchid = callPackage ../t2-services/t2-touchid/package.nix { };
+  t2-autobrightness = callPackage ../t2-services/t2-autobrightness/package.nix { };
 }

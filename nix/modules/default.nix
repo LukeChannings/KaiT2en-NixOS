@@ -35,6 +35,7 @@
     ./t2-gpu-control
     ./t2-kbd-backlight
     ./t2-debug
+    ./t2-autobrightness
     ./kait2en-utilities
   ];
 

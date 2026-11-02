@@ -139,6 +139,7 @@
             t2-gpu-control = ./nix/modules/t2-gpu-control;
             t2-kbd-backlight = ./nix/modules/t2-kbd-backlight;
             t2-debug = ./nix/modules/t2-debug;
+            t2-autobrightness = ./nix/modules/t2-autobrightness;
             kait2en-utilities = ./nix/modules/kait2en-utilities;
           };
 
