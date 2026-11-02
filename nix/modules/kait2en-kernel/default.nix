@@ -106,12 +106,13 @@ in
         Loadable module names (not package names) to load at boot. Note these
         differ from the package names: the `t2touchbar` package builds `t2hid`,
         `t2touchbar_bl` and `t2touchbar_kbd`, and the `t2bce` package builds the
-        split modules `t2bce_dma`, `t2bce_core`, `t2bce_vhci`, `t2bce_audio`
-        and `t2bce_ave`.
+        split modules `t2bce_dma`, `t2bce_core`, `t2bce_vhci`, `t2bce_audio`,
+        `t2bce_ave` and `t2bce_sidecar`.
 
         `t2bce_ave` is not loaded here: upstream loads it only from the AVE
         service unit (`ExecStartPre=modprobe t2bce_ave`), which
-        {option}`services.t2-ave` mirrors.
+        {option}`services.t2-ave` mirrors. `t2bce_sidecar` is a USB driver and
+        autoloads by modalias when `t2bce_vhci` exposes the Sidecar device.
 
         The Touch Bar display's USB configuration (`bConfigurationValue` of
         `05ac:8302`) is selected in userspace by the T2 Touch Bar daemon's
@@ -306,7 +307,10 @@ in
       # it because brcmfmac refuses to suspend async (b53cacd). pci=noaer stays
       # dropped.
       "pm_async=off"
-      "brcmfmac.p2pon=0"
+      # brcmfmac.p2pon=0 is gone (upstream a3b86a8): P2P only came up because
+      # brcmfmac matched the firmware's "hp2p" capability as "p2p", fixed in
+      # the wireless series (hardware.kait2en.wireless) and harmless without
+      # it, since p2pon already defaults off.
       "pcie_ports=compat"
       "mem_sleep_default=deep"
       "initcall_blacklist=cmos_init,magicmouse_driver_init"

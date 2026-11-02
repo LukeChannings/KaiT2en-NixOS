@@ -41,22 +41,27 @@ let
   # `../t2bce_core`), so we build all four in a single derivation, in
   # dependency order, inside one unpacked tree — no KBUILD_EXTRA_SYMBOLS
   # plumbing needed. Source is the four `t2bce_*` module subdirectories, laid
-  # out as siblings, plus `t2bce_ave`.
+  # out as siblings, plus `t2bce_ave` and `t2bce_sidecar`.
   #
   # Upstream's `t2bce_stack` DKMS package builds `t2bce_ave` (the T2 Apple
-  # Video Encoder client) as a fifth member, staging it from
-  # `t2-services/t2-ave/kernel/t2bce_ave` into the stack tree (see
-  # scripts/fedora/install-dkms-modules.sh `copy_module_source`). Its Makefile
-  # prefers a sibling `../t2bce_core`, so we stage it the same way: copied in
-  # next to the other four in postPatch, built last.
+  # Video Encoder client) and `t2bce_sidecar` (the USB driver for the Sidecar
+  # encoder device t2bce_vhci exposes; no BCE symbols) as fifth and sixth
+  # members, staging both from `t2-services/t2-ave/kernel/` into the stack
+  # tree (see scripts/fedora/install-dkms-modules.sh `copy_module_source`).
+  # t2bce_ave's Makefile prefers a sibling `../t2bce_core`, so we stage them
+  # the same way: copied in next to the other four in postPatch, built last.
   t2bceModuleSubdirs = [
     "t2bce_dma"
     "t2bce_core"
     "t2bce_vhci"
     "t2bce_audio"
   ];
-  t2bceSubdirs = t2bceModuleSubdirs ++ [ "t2bce_ave" ];
-  t2bceAveSrc = lib.cleanSource ../t2-services/t2-ave/kernel/t2bce_ave;
+  t2bceStagedSubdirs = [
+    "t2bce_ave"
+    "t2bce_sidecar"
+  ];
+  t2bceSubdirs = t2bceModuleSubdirs ++ t2bceStagedSubdirs;
+  t2bceStagedSrc = lib.cleanSource ../t2-services/t2-ave/kernel;
   t2bceSrc = lib.cleanSourceWith {
     name = "t2bce-source";
     src = ./.;
@@ -70,7 +75,7 @@ let
   };
 in
 {
-  # The whole BCE stack (dma + core + vhci + audio + ave), built in dependency
+  # The whole BCE stack (dma + core + vhci + audio + ave + sidecar), built in dependency
   # order as one derivation. Version tracks modules/t2bce_stack/dkms.conf.
   t2bce = buildKernelModule {
     pname = "t2bce";
@@ -78,10 +83,12 @@ in
     src = t2bceSrc;
     buildSubdirs = t2bceSubdirs;
     extraPostPatch = ''
-      cp -r ${t2bceAveSrc} t2bce_ave
-      chmod -R u+w t2bce_ave
+      for sub in ${lib.escapeShellArgs t2bceStagedSubdirs}; do
+        cp -r ${t2bceStagedSrc}/"$sub" "$sub"
+        chmod -R u+w "$sub"
+      done
     '';
-    meta.description = "Apple T2 BCE stack (dma + core + vhci + audio + ave)";
+    meta.description = "Apple T2 BCE stack (dma + core + vhci + audio + ave + sidecar)";
   };
 
   t2smc = mkSimple {
