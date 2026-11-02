@@ -21,10 +21,11 @@ rec {
   # The FHS locations upstream hardcodes.
   libexecDir = "/usr/local/libexec";
   wordmarkPath = "/usr/local/share/kait2en/kait2en-wordmark.png";
+  wordmarkLightPath = "/usr/local/share/kait2en/kait2en-wordmark-light.png";
 
   # A bash snippet that rewrites, in each file of `files`, every
-  # `${libexecDir}/<helper>` to `$out/libexec/<helper>` and the wordmark path to
-  # the `branding` store copy. `--replace-quiet` so a file that lacks a given
+  # `${libexecDir}/<helper>` to `$out/libexec/<helper>` and both wordmark
+  # paths (dark and light) to the `branding` store copies. `--replace-quiet` so a file that lacks a given
   # constant is silently skipped (policies mention one helper, sources may
   # mention several). The replacement target uses a plain bash `$out`, which is
   # set for the whole build, so this works in postPatch as well as postInstall.
@@ -49,6 +50,7 @@ rec {
       for kait2enFile in ${quotedFiles}; do
         substituteInPlace "$kait2enFile" \
           ${helperReplacements} \
+          --replace-quiet "${wordmarkLightPath}" "${branding}/share/kait2en/kait2en-wordmark-light.png" \
           --replace-quiet "${wordmarkPath}" "${branding}/share/kait2en/kait2en-wordmark.png"
       done
     '';
