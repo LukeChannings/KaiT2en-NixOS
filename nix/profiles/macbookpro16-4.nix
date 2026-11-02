@@ -56,6 +56,9 @@
   services.t2-force-click.enable = true;
 
   services.t2-journal.enable = true;
+  # install-apps.sh: every model with a keyboard backlight. Took over the idle
+  # timeout from the Touch Bar daemon upstream.
+  services.t2-kbd-backlight.enable = true;
 
   services.t2bce-audio-dsp = {
     enable = true;

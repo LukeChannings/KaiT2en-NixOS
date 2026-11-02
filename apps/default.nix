@@ -23,6 +23,7 @@ in
   t2-power-tune = callPackage ./t2-power-tune/package.nix { inherit branding; };
   t2-dgpu-control = callPackage ./t2-dgpu-control/package.nix { inherit branding; };
   t2-hybrid-gpu-control = callPackage ./t2-hybrid-gpu-control/package.nix { inherit branding; };
+  t2-kbd-backlight = callPackage ./t2-kbd-backlight/package.nix { };
 
   # dsp/ (host-side PipeWire/WirePlumber speaker + mic DSP).
   t2-dsp = callPackage ../dsp/package.nix { };

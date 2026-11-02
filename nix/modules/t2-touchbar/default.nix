@@ -23,6 +23,13 @@
 #   5. /etc/kait2en/touchbar.toml, the system default config (users override it
 #      with $XDG_CONFIG_HOME/kait2en-touchbar/config.toml).
 #
+# The keyboard backlight idle timeout moved to its own daemon
+# (services.t2-kbd-backlight, upstream 7f497a1), and `activity_backlight`
+# became `activity_escape`. The daemon refuses unknown keys; install.sh
+# `migrate_config` renames the key in the user's config.toml, which a NixOS
+# module cannot do: a user override still carrying `activity_backlight` must
+# be renamed by hand.
+#
 # install.sh also disables tiny-dfr / react-drm; on NixOS the equivalent is an
 # assertion against nixpkgs' tiny-dfr module.
 {

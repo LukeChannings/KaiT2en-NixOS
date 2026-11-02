@@ -33,6 +33,7 @@
     ./t2-zone-power
     ./t2-force-click
     ./t2-gpu-control
+    ./t2-kbd-backlight
     ./kait2en-utilities
   ];
 
