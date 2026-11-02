@@ -27,6 +27,9 @@
   hardware.kait2en = {
     enable = true;
     firmware.enable = true;
+    # install-wireless.sh: the patched Broadcom drivers on every T2 Mac (all
+    # have Broadcom WLAN); they also carry the AWDL interface for t2-drop.
+    wireless.enable = true;
     # Generic installer branch: amdgpu.aspm=1, pcie_aspm=force + powersave.
     amdgpuAspm = true;
     pcieAspm = "force";

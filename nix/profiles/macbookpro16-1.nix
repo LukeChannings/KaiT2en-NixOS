@@ -27,6 +27,9 @@
   hardware.kait2en = {
     enable = true;
     firmware.enable = true;
+    # install-wireless.sh: the patched Broadcom drivers on every T2 Mac (all
+    # have Broadcom WLAN); they also carry the AWDL interface for t2-drop.
+    wireless.enable = true;
     # The Navi 14 (Radeon Pro 5300M/5500M) drops off the PCIe bus under load
     # with forced ASPM: upstream leaves amdgpu.aspm, pcie_aspm=force and the
     # powersave policy off on this model and lets firmware/amdgpu decide.

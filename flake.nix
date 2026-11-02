@@ -235,6 +235,8 @@
                 inherit audioUcmConf;
                 # amdgpu + the gpu-runtime-pm series (hardware.kait2en.gpuRuntimePm).
                 gpu-runtime-pm = pkgs.callPackage ./nix/pkgs/gpu-runtime-pm { kernel = kait2enKernel; };
+                # brcmfmac + Broadcom Bluetooth with the wireless series (hardware.kait2en.wireless).
+                wireless = pkgs.callPackage ./nix/pkgs/wireless { kernel = kait2enKernel; };
                 t2bce_audio-alsa-ucm-conf = audioUcmConf;
               };
           in

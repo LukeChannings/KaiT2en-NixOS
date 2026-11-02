@@ -258,6 +258,25 @@ in
       };
     };
 
+    wireless = {
+      enable = lib.mkEnableOption ''
+        upstream's patched Broadcom wireless drivers (scripts/fedora/install-wireless.sh):
+        out-of-tree brcmfmac, hci_uart, hci_bcm4377 and btbcm carrying
+        patches/runtime/wireless, which shadow the in-tree modules. Upstream
+        installs them on every Mac with Broadcom WLAN or Bluetooth: every T2
+        Mac. Among other fixes they add the AWDL interface that
+        {option}`services.t2-drop` (AirDrop) needs'';
+
+      package = lib.mkOption {
+        type = lib.types.package;
+        default = pkgs.callPackage ../../pkgs/wireless {
+          kernel = config.boot.kernelPackages.kernel;
+        };
+        defaultText = lib.literalExpression "the patched Broadcom drivers built against config.boot.kernelPackages.kernel";
+        description = "The patched Broadcom wireless module package (see nix/pkgs/wireless).";
+      };
+    };
+
     extraKernelParams = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -284,7 +303,9 @@ in
     boot.kernelPackages = lib.mkDefault cfg.kernelPackages;
 
     boot.extraModulePackages =
-      cfg.modulePackages ++ lib.optional cfg.gpuRuntimePm.enable cfg.gpuRuntimePm.package;
+      cfg.modulePackages
+      ++ lib.optional cfg.gpuRuntimePm.enable cfg.gpuRuntimePm.package
+      ++ lib.optional cfg.wireless.enable cfg.wireless.package;
 
     # install-gpu-runtime-pm.sh's kait2en-gpu-runtime-pm.conf: GMUX must
     # provide the power callbacks before AMDGPU probes.
