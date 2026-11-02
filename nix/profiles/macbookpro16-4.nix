@@ -56,6 +56,9 @@
   services.t2-force-click.enable = true;
 
   services.t2-journal.enable = true;
+  # install-apps.sh: on every T2 Mac. D-Bus activated, inert until used; its
+  # AWDL interface comes from hardware.kait2en.wireless above.
+  services.t2-drop.enable = true;
   services.t2-debug.enable = true;
   # install-apps.sh: every model with a keyboard backlight. Took over the idle
   # timeout from the Touch Bar daemon upstream.

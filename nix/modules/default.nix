@@ -37,6 +37,7 @@
     ./t2-debug
     ./t2-autobrightness
     ./t2-sidecar
+    ./t2-drop
     ./kait2en-utilities
   ];
 

@@ -26,6 +26,7 @@ in
   t2-kbd-backlight = callPackage ./t2-kbd-backlight/package.nix { };
   t2-debug = callPackage ./t2-debug/package.nix { inherit branding; };
   t2-sidecar = callPackage ./t2-sidecar/package.nix { };
+  t2-drop = callPackage ./t2-drop/package.nix { };
 
   # dsp/ (host-side PipeWire/WirePlumber speaker + mic DSP).
   t2-dsp = callPackage ../dsp/package.nix { };
