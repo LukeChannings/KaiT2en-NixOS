@@ -50,6 +50,8 @@ let
     "org.t2zonepower.gtk.desktop"
     "org.t2hybridgpucontrol.gtk.desktop"
     "org.t2dgpucontrol.gtk.desktop"
+    "org.t2debug.gtk.desktop"
+    "org.t2airshare.gtk.desktop"
   ];
 
   # Run as a NixOS-integrated home-manager (`home-manager.users.<name>`) and

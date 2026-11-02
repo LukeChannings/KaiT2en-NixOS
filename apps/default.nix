@@ -24,6 +24,7 @@ in
   t2-dgpu-control = callPackage ./t2-dgpu-control/package.nix { inherit branding; };
   t2-hybrid-gpu-control = callPackage ./t2-hybrid-gpu-control/package.nix { inherit branding; };
   t2-kbd-backlight = callPackage ./t2-kbd-backlight/package.nix { };
+  t2-debug = callPackage ./t2-debug/package.nix { inherit branding; };
 
   # dsp/ (host-side PipeWire/WirePlumber speaker + mic DSP).
   t2-dsp = callPackage ../dsp/package.nix { };

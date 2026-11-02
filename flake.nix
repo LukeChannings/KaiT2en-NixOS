@@ -138,6 +138,7 @@
             t2-force-click = ./nix/modules/t2-force-click;
             t2-gpu-control = ./nix/modules/t2-gpu-control;
             t2-kbd-backlight = ./nix/modules/t2-kbd-backlight;
+            t2-debug = ./nix/modules/t2-debug;
             kait2en-utilities = ./nix/modules/kait2en-utilities;
           };
 

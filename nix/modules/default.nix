@@ -34,6 +34,7 @@
     ./t2-force-click
     ./t2-gpu-control
     ./t2-kbd-backlight
+    ./t2-debug
     ./kait2en-utilities
   ];
 
