@@ -3,9 +3,10 @@
 # cdc_ncm only learns the link is up from bridgeOS's NETWORK_CONNECTION
 # notification. When cdc_ncm binds in early boot, bridgeOS has not finished
 # bringing its side up and never sends it, so the link sits without carrier
-# (and NetworkManager never gives it an IPv6 link-local address) until the
-# first suspend/resume reset-resumes the device. A later unbind/bind gets the
-# notification within a second, with or without NetworkManager running.
+# (and so without its IPv6 link-local address) until the first suspend/resume
+# reset-resumes the device. A later unbind/bind gets the notification within a
+# second; the rebind re-fires udev's `add`, whose 90-t2-services-ncm.rules
+# brings the new netdev up.
 #
 # Local to the Nix layer: upstream ships no equivalent. Drop it once upstream
 # gains a boot-time fix, or once the T2 reports carrier on the first bind.

@@ -3,13 +3,22 @@
 #
 # ── shared (services.t2-services) ──────────────────────────────────────────
 # Mirrors t2-services/shared (Makefile `install` + install-t2-services-common.sh):
-#   * NetworkManager: conf.d/10-t2-services.conf (`no-auto-default` for the
-#     fixed T2 NCM MAC, so NM stops spawning duplicate wired profiles) and the
-#     "Apple T2 Bridge" profile from integration/NetworkManager/
-#     t2-ncm.nmconnection (IPv6 link-local only — the services talk to bridgeOS
-#     over it). This replaces the old t2-ncm `NM_UNMANAGED` udev rule, which
-#     upstream deletes: an unmanaged link has no link-local address, so
-#     t2remote/t2-touchid/t2journal could not reach the T2.
+#   * NetworkManager: conf.d/10-t2-services.conf, consumed from the tree with
+#     its two keys turned into appends (`key+=`): NixOS renders
+#     networking.networkmanager.unmanaged into the main NetworkManager.conf,
+#     which a plain `unmanaged-devices=` in conf.d would replace. (t2-drop's
+#     90-t2-drop-awdl.conf already appends.) It sets `no-auto-default` and
+#     `unmanaged-devices` for the fixed T2 NCM MAC:
+#     NetworkManager leaves the link alone (upstream 3390f69), because it took
+#     the link down on PrepareForSleep before the suspend hooks could close
+#     their T2 sessions, and bridgeOS then dropped SideCar (and t2bce_vhci with
+#     it) while the host slept. This retires the declarative "Apple T2 Bridge"
+#     profile (upstream deleted t2-ncm.nmconnection); it lived in
+#     /run/NetworkManager/system-connections, so it is gone on the next boot.
+#   * udev: integration/udev/90-t2-services-ncm.rules brings the unmanaged
+#     link up with kernel-generated (eui64) IPv6 link-local addressing — the
+#     services talk to bridgeOS over it. Its `RUN+="/usr/sbin/ip …"` is
+#     rewritten to iproute2 from the store.
 #   * t2-services-suspend.service (integration/systemd/
 #     t2-services-suspend.service): runs integration/libexec/t2-ncm-sleep
 #     pre/post around sleep, which runs every feature's sleep.d hook. Upstream
@@ -18,7 +27,9 @@
 #   * t2-ncm-carrier.service (local, no upstream equivalent): bridgeOS never
 #     reports carrier on the NCM link when cdc_ncm binds in early boot, so the
 #     link stays without a link-local address until the first resume. The
-#     service rebinds cdc_ncm once after boot if carrier is still missing.
+#     service rebinds cdc_ncm once after boot if carrier is still missing; the
+#     rebind re-fires the udev `add` event, so the rule above brings the fresh
+#     netdev up again.
 #   * The Fedora lifecycle/migration helpers (packaging/lifecycle,
 #     integration/migration, integration/libexec/package-actions) are
 #     installer bookkeeping and not consumed.
@@ -50,6 +61,22 @@ let
   journalCfg = config.services.t2-journal;
 
   sharedSrc = ../../../t2-services/shared/integration;
+
+  # integration/NetworkManager/10-t2-services.conf, appending to (rather than
+  # replacing) the list values from the NixOS-rendered NetworkManager.conf.
+  ncmNetworkManagerConf = pkgs.runCommand "10-t2-services.conf" { } ''
+    sed -E 's/^(no-auto-default|unmanaged-devices)=/\1+=/' \
+      ${sharedSrc + "/NetworkManager/10-t2-services.conf"} > "$out"
+    grep -q '^unmanaged-devices+=' "$out"
+  '';
+
+  # integration/udev/90-t2-services-ncm.rules, with its FHS `ip` resolved.
+  ncmUdevRules = pkgs.runCommand "t2-services-ncm-udev" { } ''
+    install -Dm644 ${sharedSrc + "/udev/90-t2-services-ncm.rules"} \
+      "$out/lib/udev/rules.d/90-t2-services-ncm.rules"
+    substituteInPlace "$out/lib/udev/rules.d/90-t2-services-ncm.rules" \
+      --replace-fail '/usr/sbin/ip ' '${pkgs.iproute2}/bin/ip '
+  '';
 
   ncmSleep =
     pkgs.runCommand "t2-ncm-sleep"
@@ -94,19 +121,20 @@ in
   options = {
     services.t2-services = {
       enable = lib.mkEnableOption ''
-        the shared T2 bridge-link integration: the NetworkManager
-        "Apple T2 Bridge" link-local profile for the internal CDC-NCM
-        interface and the t2-services suspend/resume hook runner'';
+        the shared T2 bridge-link integration: the udev rule that brings the
+        internal CDC-NCM interface up with an IPv6 link-local address, the
+        NetworkManager drop-in that leaves it unmanaged, and the t2-services
+        suspend/resume hook runner'';
 
       manageNetworkProfile = lib.mkOption {
         type = lib.types.bool;
         default = config.networking.networkmanager.enable;
         defaultText = lib.literalExpression "config.networking.networkmanager.enable";
         description = ''
-          Provision the NetworkManager `no-auto-default` drop-in and the
-          declarative "Apple T2 Bridge" profile (IPv6 link-local on the T2 NCM
-          MAC ac:de:48:00:11:22). Without NetworkManager you must bring that
-          link up with an IPv6 link-local address yourself.
+          Install the NetworkManager drop-in (10-t2-services.conf) that keeps
+          NetworkManager off the T2 NCM link (MAC ac:de:48:00:11:22):
+          `no-auto-default` plus `unmanaged-devices`. The link itself is
+          brought up by udev either way.
         '';
       };
     };
@@ -176,24 +204,10 @@ in
 
     (lib.mkIf cfg.enable {
       environment.etc."NetworkManager/conf.d/10-t2-services.conf" = lib.mkIf cfg.manageNetworkProfile {
-        source = sharedSrc + "/NetworkManager/10-t2-services.conf";
+        source = ncmNetworkManagerConf;
       };
 
-      # integration/NetworkManager/t2-ncm.nmconnection.
-      networking.networkmanager.ensureProfiles.profiles = lib.mkIf cfg.manageNetworkProfile {
-        t2-ncm = {
-          connection = {
-            id = "Apple T2 Bridge";
-            uuid = "6ab6bd67-a58f-47a6-a7c5-b03c2de64f2b";
-            type = "ethernet";
-            autoconnect = "true";
-            autoconnect-retries = "0";
-          };
-          ethernet.mac-address = "AC:DE:48:00:11:22";
-          ipv4.method = "disabled";
-          ipv6.method = "link-local";
-        };
-      };
+      services.udev.packages = [ ncmUdevRules ];
 
       # Mirrors integration/systemd/t2-services-suspend.service.
       systemd.services.t2-services-suspend = {
