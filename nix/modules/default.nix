@@ -36,6 +36,7 @@
     ./t2-kbd-backlight
     ./t2-debug
     ./t2-autobrightness
+    ./t2-sidecar
     ./kait2en-utilities
   ];
 
