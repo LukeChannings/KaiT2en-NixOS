@@ -53,6 +53,8 @@ let
   cfg = config.hardware.kait2en.gpuControl;
   branding = pkgs.callPackage ../../pkgs/kait2en-branding { };
   dgpuHelper = "${cfg.dgpuPackage}/libexec/t2-dgpu-control-helper";
+  hybridHelper = "${cfg.hybridPackage}/libexec/t2-hybrid-gpu-control-helper";
+  esp = config.boot.loader.efi.efiSysMountPoint;
 in
 {
   options.hardware.kait2en.gpuControl = {
@@ -114,9 +116,38 @@ in
 
     hybridPackage = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.callPackage ../../../apps/t2-hybrid-gpu-control/package.nix { inherit branding; };
+      default = pkgs.callPackage ../../../apps/t2-hybrid-gpu-control/package.nix {
+        inherit branding;
+        espMountPoint = esp;
+      };
       defaultText = lib.literalExpression "pkgs.callPackage ../../../apps/t2-hybrid-gpu-control/package.nix { }";
       description = "The t2-hybrid-gpu-control package.";
+    };
+
+    hybridPreboot = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        (hybrid mode) Install upstream's `t2-gpu-preboot` UEFI image on the ESP
+        and boot it before the loader, so a Linux boot that follows macOS comes
+        back up on the integrated GPU instead of the discrete one. Only useful
+        if you actually boot macOS: macOS rewrites the `gpu-power-prefs` EFI
+        variable every time, and the firmware reads it during POST, which is
+        too early for anything running under Linux to correct. The image puts
+        the variable back and warm resets.
+
+        Off by default, unlike upstream's installer, because switching it on
+        writes to the machine's NVRAM: it adds a "KaiT2en GPU" boot entry and
+        moves it to the front of BootOrder, which is not something a
+        `nixos-rebuild` would otherwise do.
+
+        Setting it back to `false` stops the image being installed, but the
+        NVRAM entry is not NixOS' to garbage-collect -- clear it by hand
+        before you switch, with
+        `t2-hybrid-gpu-control-helper remove-preboot`.
+
+        Needs {option}`boot.loader.systemd-boot.enable`.
+      '';
     };
   };
 
@@ -131,6 +162,46 @@ in
       services.kait2en-utilities.apps = [ "org.t2hybridgpucontrol.gtk.desktop" ];
       environment.etc."environment.d/90-kait2en-gsk-renderer.conf".source =
         ../../../apps/t2-hybrid-gpu-control/contrib/90-kait2en-gsk-renderer.conf;
+    })
+
+    (lib.mkIf (cfg.mode == "hybrid" && cfg.hybridPreboot) {
+      assertions = [
+        {
+          assertion = config.boot.loader.systemd-boot.enable;
+          message = ''
+            hardware.kait2en.gpuControl.hybridPreboot needs
+            boot.loader.systemd-boot: the UEFI image is placed on the ESP with
+            boot.loader.systemd-boot.extraFiles, and the image chainloads
+            systemd-boot by path. With GRUB, build the package with
+            `chainload` pointing at grubx64.efi and copy the image onto the
+            ESP yourself.
+          '';
+        }
+      ];
+
+      # The bootloader owns the ESP, so the image goes through it rather than
+      # being copied in by an activation script.
+      boot.loader.systemd-boot.extraFiles."EFI/kait2en/t2-gpu-preboot.efi" =
+        "${cfg.hybridPackage}/share/t2-hybrid-gpu-control/t2-gpu-preboot.efi";
+
+      # upstream Makefile `install`: `helper sync-preboot`. It is idempotent --
+      # it creates the "KaiT2en GPU" entry only when absent, deletes duplicates
+      # from older runs and moves the entry first in BootOrder only when it is
+      # not already there -- so running it every boot is a no-op once settled.
+      # Every boot is deliberate: `bootctl install` puts systemd-boot back at
+      # the front of BootOrder whenever it runs, and this has to win.
+      systemd.services.kait2en-gpu-preboot-sync = {
+        description = "Keep the t2-gpu-preboot UEFI boot entry first in BootOrder";
+        unitConfig.ConditionPathIsDirectory = "/sys/firmware/efi/efivars";
+        after = [ "local-fs.target" ];
+        wantedBy = [ "multi-user.target" ];
+        restartTriggers = [ cfg.hybridPackage ];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart = "${hybridHelper} sync-preboot";
+        };
+      };
     })
 
     (lib.mkIf (cfg.mode == "hybrid" && cfg.hybridAtBoot) {

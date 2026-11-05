@@ -333,7 +333,7 @@ Version bumps in any `dkms.conf` must land in the matching derivation.
 |---|---|
 | `scripts/fedora/install-gpu-runtime-pm.sh` + `patches/runtime/gpu-runtime-pm/{series,*.patch}` | `nix/pkgs/gpu-runtime-pm` (out-of-tree amdgpu from `kernel.src` + the series against `kernel.dev`, installed to `updates/kait2en-gpu-runtime-pm`; mirrors the script's `patch_needed_for_kernel` skip list, `--forward --fuzz=3` + already-applied tolerance and the `TRACE_INCLUDE_PATH` sed) + `hardware.kait2en.gpuRuntimePm` (`softdep amdgpu pre: t2gmux`). Upstream's supported-model list → profiles enable it (15,1 / 16,1 / 16,4; iMac20,x if a profile is added). New entries in `patch_needed_for_kernel` → `patchNeeded`. |
 | `apps/t2-dgpu-control`, `apps/t2-hybrid-gpu-control` (+ `install-apps.sh` `install_gpu_control` model map) | `package.nix` each + shared `nix/modules/t2-gpu-control` (`gpuControl.mode = "dgpu" \| "hybrid"`; hybrid warns without `gpuRuntimePm`) |
-| `apps/t2-hybrid-gpu-control/preboot` (`t2-gpu-preboot.efi`, the `x86_64-unknown-uefi` crate upstream `873ac3d` added) + the helper's `sync-preboot`/`remove-preboot` | **not consumed yet** — see Known blockers. The Makefile copies the image to `/boot/efi/EFI/kait2en` and has `efibootmgr` put a "KaiT2en GPU" entry first in BootOrder; on NixOS the ESP path is `boot.loader.efi.efiSysMountPoint` and boot entries belong to the bootloader module, so this needs a module that owns the ESP file and the NVRAM entry. The GUI and both helpers are packaged as before and work without it; only the automatic post-macOS restore is missing. |
+| `apps/t2-hybrid-gpu-control/preboot` (`t2-gpu-preboot.efi`, the `x86_64-unknown-uefi` crate upstream `873ac3d` added) + the Makefile's ESP copy + the helper's `sync-preboot` | `apps/t2-hybrid-gpu-control/preboot.nix` (built with `-Z build-std`, see its header) → the image ships in the app's `share/t2-hybrid-gpu-control/`, and `hardware.kait2en.gpuControl.hybridPreboot` (**opt-in**, unlike upstream's installer: it writes NVRAM) places it with `boot.loader.systemd-boot.extraFiles` and reasserts the boot entry each boot with `kait2en-gpu-preboot-sync` running the helper's idempotent `sync-preboot`. `remove-preboot` is not wired to anything — turning the option off leaves the NVRAM entry for the user to clear. |
 
 ### Wireless
 
@@ -428,6 +428,7 @@ upstream `.github/**`, `PLAN.md`, docs, `LICENSE*`/`LICENSING.md`/`AUTHORS`/
 | `patches/nixos/t2-fan-control-release-failsafe.patch` (rebased onto upstream's reworked `control.rs` in the 2026-10-17 sync; rebased again in the 2026-10-19 sync for the native-SMC switch — upstream now releases at *startup* in native mode, not on termination). Its `--release` relies on t2smc treating `fanN_target=0` as hand-back (upstream `513a82d`); with older t2smc that write latched the fan in manual mode at 0 rpm | upstream releases fans to SMC auto on daemon termination (SIGTERM handler or `--release`/ExecStopPost equivalent) |
 | `patches/nixos/t2-power-tune-vhci-exclude.patch` (added in the 2026-10-19 sync; was the in-tree edit `92d2a1b`) | upstream's `t2-power-tune-helper` excludes `t2bce_vhci` devices from the wakeup/runtime-PM tunables in `scan()` and `validate()` |
 | `nix/pkgs/kernel/patches/0001-hid-add-spi-hid-device-types-and-macro.patch` (kernel ABI, not app) | `HID_SPI_DEVICE` + SPI `hid_type` members land in the in-tree `include/linux/hid.h` |
+| `preboot.nix`'s `substituteInPlace` of `CHAINLOAD` in `preboot/src/main.rs` (not a file in `patches/nixos`, but a divergence all the same — upstream hardcodes `\EFI\fedora\shimx64.efi` and `grubx64.efi`) | upstream reads the chainload path from a variable or a config file instead of `cstr16!` constants |
 
 (`patches/runtime/gpu-runtime-pm` is upstream's own series, consumed via the GPU
 row, not a divergence.)
@@ -446,16 +447,20 @@ row, not a divergence.)
   coming up from udev (t2remote/Touch ID/t2journal reach bridgeOS, and survive
   suspend), AWDL/AirDrop, Quick Share's Bluetooth→hotspot hand-off and Sidecar
   can only be proven on a T2 Mac.
-- **`t2-gpu-preboot` is not ported** (upstream `873ac3d`, `19adae8`). Upstream
-  boots a small UEFI image before the bootloader to put `gpu-power-prefs` back
-  to the iGPU after macOS has reset it, driven by the `boot-gpu-*` EFI
-  variable. Three things make it its own change: the crate needs the
-  `x86_64-unknown-uefi` Rust target (Fedora installs `rust-std-static-…`;
-  nixpkgs needs the target's std or `build-std`), the image has to land on the
-  ESP that `boot.loader` owns, and the boot entry has to be created
-  declaratively instead of by `efibootmgr` at install time. Until then,
-  hybrid-mode users re-run the GUI after booting macOS, exactly as before
-  `873ac3d`.
+- **`t2-gpu-preboot` is systemd-boot only, and unproven on hardware.** The
+  module asserts `boot.loader.systemd-boot.enable`, because the image is
+  placed with its `extraFiles` and the chainload path is substituted at build
+  time. A GRUB user has to override `chainload` and copy the image themselves.
+  Nothing about the NVRAM half — entry creation, BootOrder position surviving
+  `bootctl install`, the warm reset — can be proven anywhere but a T2 Mac that
+  dual-boots macOS.
+- **`-Z build-std` needs `RUSTC_BOOTSTRAP`.** nixpkgs' rustc ships no
+  `x86_64-unknown-uefi` std, so `preboot.nix` builds `core`/`alloc`/
+  `compiler_builtins` from `rustPlatform.rustLibSrc` and vendors the std's own
+  crates.io dependencies alongside the app's. A rustc bump can therefore break
+  the preboot build on its own; if it does, check the merged vendor dir first.
+  The day nixpkgs' rustc gains the target, delete all of it and set
+  `cargoBuildTarget`.
 - **Touch Bar config key rename**: `activity_backlight` became
   `activity_escape`; a user `~/.config/kait2en-touchbar/config.toml` still
   carrying the old key makes the daemon refuse to start until renamed by hand

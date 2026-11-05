@@ -13,6 +13,7 @@
 # ../../nix/lib/kait2en-polkit.nix.
 {
   lib,
+  callPackage,
   rustPlatform,
   pkg-config,
   glib,
@@ -23,7 +24,15 @@
   systemd,
   coreutils,
   e2fsprogs,
+  efibootmgr,
+  util-linux,
+  gnugrep,
   branding,
+  # Where the ESP is mounted. Upstream's helper assumes Fedora's /boot/efi;
+  # NixOS mounts it at boot.loader.efi.efiSysMountPoint, /boot by default, and
+  # services.t2-gpu-control passes that through.
+  espMountPoint ? "/boot",
+  preboot ? callPackage ./preboot.nix { },
 }:
 
 let
@@ -62,6 +71,17 @@ rustPlatform.buildRustPackage {
     install -Dm755 contrib/t2-hybrid-gpu-control-helper "$out/libexec/t2-hybrid-gpu-control-helper"
     install -Dm755 contrib/t2-hybrid-gpu-control-status "$out/libexec/t2-hybrid-gpu-control-status"
     patchShebangs "$out/libexec/t2-hybrid-gpu-control-helper" "$out/libexec/t2-hybrid-gpu-control-status"
+
+    # The UEFI image, and the two paths its helper subcommands reach for. The
+    # ESP is Fedora's /boot/efi upstream; PREBOOT_FILE then follows from it.
+    # Nothing copies the image onto the ESP here -- that is the bootloader's
+    # business, so nix/modules/t2-gpu-control hands it to
+    # boot.loader.systemd-boot.extraFiles.
+    install -Dm644 ${preboot}/share/t2-hybrid-gpu-control/t2-gpu-preboot.efi \
+      "$out/share/t2-hybrid-gpu-control/t2-gpu-preboot.efi"
+    substituteInPlace "$out/libexec/t2-hybrid-gpu-control-helper" \
+      --replace-fail 'readonly ESP_MOUNT=/boot/efi' 'readonly ESP_MOUNT=${espMountPoint}'
+
     for h in t2-hybrid-gpu-control-helper t2-hybrid-gpu-control-status; do
       wrapProgram "$out/libexec/$h" \
         --prefix PATH : ${
@@ -70,6 +90,12 @@ rustPlatform.buildRustPackage {
             systemd
             coreutils
             e2fsprogs
+            # sync-preboot / remove-preboot: efibootmgr for the boot entry,
+            # findmnt + lsblk to resolve the ESP to a disk and partition,
+            # grep to filter BootOrder.
+            efibootmgr
+            util-linux
+            gnugrep
           ]
         }
     done
