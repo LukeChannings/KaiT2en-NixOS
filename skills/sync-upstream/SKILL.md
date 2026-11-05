@@ -333,12 +333,13 @@ Version bumps in any `dkms.conf` must land in the matching derivation.
 |---|---|
 | `scripts/fedora/install-gpu-runtime-pm.sh` + `patches/runtime/gpu-runtime-pm/{series,*.patch}` | `nix/pkgs/gpu-runtime-pm` (out-of-tree amdgpu from `kernel.src` + the series against `kernel.dev`, installed to `updates/kait2en-gpu-runtime-pm`; mirrors the script's `patch_needed_for_kernel` skip list, `--forward --fuzz=3` + already-applied tolerance and the `TRACE_INCLUDE_PATH` sed) + `hardware.kait2en.gpuRuntimePm` (`softdep amdgpu pre: t2gmux`). Upstream's supported-model list → profiles enable it (15,1 / 16,1 / 16,4; iMac20,x if a profile is added). New entries in `patch_needed_for_kernel` → `patchNeeded`. |
 | `apps/t2-dgpu-control`, `apps/t2-hybrid-gpu-control` (+ `install-apps.sh` `install_gpu_control` model map) | `package.nix` each + shared `nix/modules/t2-gpu-control` (`gpuControl.mode = "dgpu" \| "hybrid"`; hybrid warns without `gpuRuntimePm`) |
+| `apps/t2-hybrid-gpu-control/preboot` (`t2-gpu-preboot.efi`, the `x86_64-unknown-uefi` crate upstream `873ac3d` added) + the helper's `sync-preboot`/`remove-preboot` | **not consumed yet** — see Known blockers. The Makefile copies the image to `/boot/efi/EFI/kait2en` and has `efibootmgr` put a "KaiT2en GPU" entry first in BootOrder; on NixOS the ESP path is `boot.loader.efi.efiSysMountPoint` and boot entries belong to the bootloader module, so this needs a module that owns the ESP file and the NVRAM entry. The GUI and both helpers are packaged as before and work without it; only the automatic post-macOS restore is missing. |
 
 ### Wireless
 
 | Upstream sources | Ours |
 |---|---|
-| `scripts/fedora/install-wireless.sh` + `patches/runtime/wireless/{series,*.patch}` | `nix/pkgs/wireless` (brcmfmac + wcc/cyw/bca, hci_uart, hci_bcm4377, btbcm from `kernel.src` + the series against `kernel.dev`, installed to `updates/kait2en-wireless`; mirrors `select_modules` against the kernel's `.config`, the `BT_BCM` handling and `apply_patch_if_needed`) + `hardware.kait2en.wireless`, on in every profile (the script's `has_broadcom_wireless` probe holds on every T2 Mac). Carries the `brcmf_awdl` netlink family `t2-drop` needs. |
+| `scripts/fedora/install-wireless.sh` + `patches/runtime/wireless/{series,*.patch}` | `nix/pkgs/wireless` (brcmutil, brcmfmac + wcc/cyw/bca, hci_uart, hci_bcm4377, btbcm from `kernel.src` + the series against `kernel.dev`, installed to `updates/kait2en-wireless`; mirrors `select_modules` against the kernel's `.config`, the `BT_BCM` handling, `BRCMFMAC_MAKE_ARGS` and `apply_patch_if_needed`) + `hardware.kait2en.wireless`, on in every profile (the script's `has_broadcom_wireless` probe holds on every T2 Mac). Carries the Broadcom-OUI nl80211 vendor commands `t2-drop` needs — series 0010/0011; upstream `6e56b90` retired the `brcmf_awdl` generic netlink family. **brcmutil is rebuilt with brcmfmac's `CONFIG_BRCMDBG=y` rather than taken in-tree**: the debug build imports `brcmu_dbg_hex_dump`, which the stock brcmutil keeps behind `#if defined(DEBUG)`, so shipping one without the other leaves brcmfmac unloadable. |
 
 ### Audio
 
@@ -445,6 +446,16 @@ row, not a divergence.)
   coming up from udev (t2remote/Touch ID/t2journal reach bridgeOS, and survive
   suspend), AWDL/AirDrop, Quick Share's Bluetooth→hotspot hand-off and Sidecar
   can only be proven on a T2 Mac.
+- **`t2-gpu-preboot` is not ported** (upstream `873ac3d`, `19adae8`). Upstream
+  boots a small UEFI image before the bootloader to put `gpu-power-prefs` back
+  to the iGPU after macOS has reset it, driven by the `boot-gpu-*` EFI
+  variable. Three things make it its own change: the crate needs the
+  `x86_64-unknown-uefi` Rust target (Fedora installs `rust-std-static-…`;
+  nixpkgs needs the target's std or `build-std`), the image has to land on the
+  ESP that `boot.loader` owns, and the boot entry has to be created
+  declaratively instead of by `efibootmgr` at install time. Until then,
+  hybrid-mode users re-run the GUI after booting macOS, exactly as before
+  `873ac3d`.
 - **Touch Bar config key rename**: `activity_backlight` became
   `activity_escape`; a user `~/.config/kait2en-touchbar/config.toml` still
   carrying the old key makes the daemon refuse to start until renamed by hand
