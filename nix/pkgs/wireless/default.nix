@@ -13,13 +13,20 @@
 # in-tree modules. Same here, like nix/pkgs/gpu-runtime-pm.
 #
 # Mirrors the script:
-#   * `select_modules`: brcmfmac (+ its wcc/cyw/bca vendor modules) when the
-#     kernel builds BRCMFMAC as a module, hci_uart (UART Bluetooth of the
-#     BCM4355/BCM4364 Macs) and hci_bcm4377 (PCIe Bluetooth) likewise, and
-#     btbcm whenever a Bluetooth driver is replaced: both link to it. A kernel
-#     with BT_BCM built in cannot take the patched drivers (hard error); one
-#     without BT_BCM gets it built here (the series makes BT_HCIBCM4377 select
-#     it). Decided from the kernel's own .config at build time, as upstream does.
+#   * `select_modules`: brcmutil and brcmfmac (+ its wcc/cyw/bca vendor
+#     modules) when the kernel builds BRCMFMAC as a module, hci_uart (UART
+#     Bluetooth of the BCM4355/BCM4364 Macs) and hci_bcm4377 (PCIe Bluetooth)
+#     likewise, and btbcm whenever a Bluetooth driver is replaced: both link to
+#     it. A kernel with BT_BCM built in cannot take the patched drivers (hard
+#     error); one without BT_BCM gets it built here (the series makes
+#     BT_HCIBCM4377 select it). Decided from the kernel's own .config at build
+#     time, as upstream does.
+#   * `BRCMFMAC_MAKE_ARGS` (upstream a104fa6): neither Fedora's kernel nor
+#     nixpkgs' sets CONFIG_BRCMDBG, so brcmfmac ships without `brcmf_dbg()`
+#     output -- which the AWDL series leans on, and AWDL can only be debugged
+#     on hardware. Building with it turns on brcmutil's debug-only exports
+#     (`brcmu_dbg_hex_dump`), so brcmutil has to be rebuilt the same way and
+#     brcmfmac linked against its Module.symvers.
 #   * `load_patch_series` + `apply_patch_if_needed`: every series entry, with
 #     `--forward --fuzz=3`; one that already reverse-applies counts as present.
 #   * the `has_broadcom_wireless` DMI/PCI probe has no Nix equivalent: every
@@ -52,7 +59,13 @@ let
   inherit (kernel) modDirVersion;
   kernelBuildDir = "${kernel.dev}/lib/modules/${modDirVersion}/build";
   brcmfmacDir = "drivers/net/wireless/broadcom/brcm80211/brcmfmac";
+  brcmutilDir = "drivers/net/wireless/broadcom/brcm80211/brcmutil";
   bluetoothDir = "drivers/bluetooth";
+  # install-wireless.sh BRCMFMAC_MAKE_ARGS.
+  brcmfmacMakeArgs = [
+    "CONFIG_BRCMDBG=y"
+    "KCPPFLAGS=-DDEBUG -DCONFIG_BRCMDBG=1"
+  ];
   installDir = "lib/modules/${modDirVersion}/updates/kait2en-wireless";
 in
 stdenv.mkDerivation {
@@ -71,12 +84,13 @@ stdenv.mkDerivation {
     "format"
   ];
 
-  # Only the trees the script copies out of the kernel source: brcmfmac, the
-  # brcm80211 headers it includes, and drivers/bluetooth.
+  # Only the trees the script copies out of the kernel source: brcmfmac,
+  # brcmutil, the brcm80211 headers they include, and drivers/bluetooth.
   unpackPhase = ''
     runHook preUnpack
     tar -xf "$src" --strip-components=1 --wildcards \
       '*/drivers/net/wireless/broadcom/brcm80211/brcmfmac/*' \
+      '*/drivers/net/wireless/broadcom/brcm80211/brcmutil/*' \
       '*/drivers/net/wireless/broadcom/brcm80211/include/*' \
       '*/drivers/bluetooth/*'
     runHook postUnpack
@@ -113,6 +127,7 @@ stdenv.mkDerivation {
     if [[ $(kernel_config BRCMFMAC) == m ]]; then
       buildBrcmfmac=1
       modules+=(
+        ${brcmutilDir}/brcmutil.ko
         ${brcmfmacDir}/brcmfmac.ko
         ${brcmfmacDir}/wcc/brcmfmac-wcc.ko
         ${brcmfmacDir}/cyw/brcmfmac-cyw.ko
@@ -143,7 +158,11 @@ stdenv.mkDerivation {
   buildPhase = ''
     runHook preBuild
     if (( buildBrcmfmac )); then
-      make -j"$NIX_BUILD_CORES" -C ${kernelBuildDir} M="$PWD/${brcmfmacDir}" modules
+      make -j"$NIX_BUILD_CORES" -C ${kernelBuildDir} M="$PWD/${brcmutilDir}" \
+        ${lib.escapeShellArgs brcmfmacMakeArgs} modules
+      make -j"$NIX_BUILD_CORES" -C ${kernelBuildDir} M="$PWD/${brcmfmacDir}" \
+        KBUILD_EXTRA_SYMBOLS="$PWD/${brcmutilDir}/Module.symvers" \
+        ${lib.escapeShellArgs brcmfmacMakeArgs} modules
     fi
     if (( buildBluetooth )); then
       make -j"$NIX_BUILD_CORES" -C ${kernelBuildDir} M="$PWD/${bluetoothDir}" \
