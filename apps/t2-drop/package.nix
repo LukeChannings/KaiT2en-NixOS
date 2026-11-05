@@ -1,8 +1,10 @@
 # t2-drop (`t2drop`): AirDrop to and from Apple devices over AWDL. A root
-# service, D-Bus activated (org.t2drop), that drives the brcmf_awdl generic
-# netlink family of the KaiT2en brcmfmac patch (hardware.kait2en.wireless),
-# scans for AirDrop senders over BLE and hands received files to per-user
-# agents; `t2drop` is also its CLI.
+# service, D-Bus activated (org.t2drop), that drives AWDL through the
+# Broadcom-OUI nl80211 vendor commands of the KaiT2en brcmfmac series
+# (hardware.kait2en.wireless; patches 0010-0011 -- upstream 6e56b90 replaced
+# the old `brcmf_awdl` generic netlink family with them), scans for AirDrop
+# senders over BLE and hands received files to per-user agents; `t2drop` is
+# also its CLI.
 #
 # Upstream's Makefile installs systemd/t2-drop.service (hardcodes
 # /usr/local/bin), the system-bus policy dbus/org.t2drop.conf, the activation
