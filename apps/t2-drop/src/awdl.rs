@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! AWDL through the firmware of the T2 Macs: the iovar requests that bring
-//! AWDL up as in macOS 15.4.1, election by following the master the peers
-//! announce, and the AirDrop peers found in their action frames.
+//! AWDL through the firmware of the T2 Macs: the TLVs of the AWDL frames as
+//! in macOS 15.4.1, election by following the master the peers announce,
+//! and the AirDrop peers found in their action frames. The brcmfmac AWDL
+//! vendor commands set the other firmware parameters.
 //!
-//! The requests start from what macOS sent on a MacBookAir9,1 (BCM4377).
-//! The changes the BCM4364 needs were found by testing on a
-//! MacBookPro15,1: slot_bss in its SDB off form, the role SLAVE in
-//! awdl_opmode, an ARPA TLV with the own host name, see
-//! reverse-engineering/airdrop/README.md.
+//! The TLVs start from what macOS sent on a MacBookAir9,1 (BCM4377). The
+//! BCM4364 of the MacBookPro15,1 also needs an ARPA TLV with the own host
+//! name.
 
 use std::collections::HashMap;
 use std::process::Command;
@@ -16,23 +15,13 @@ use std::time::Instant;
 use anyhow::{Result, bail};
 use log::{debug, info, warn};
 
-use crate::genl::{Event, Genl};
+use crate::nl80211::{Event, Master, Nl80211};
 
 /// The AWDL MAC in the captured requests, replaced by the own one.
 const CAPTURE_MAC: [u8; 6] = [0x62, 0xaf, 0x12, 0xd8, 0x0c, 0xd9];
 
 const PAYLOAD: &str = "8b0006090000000000000000000018280062af12d80cd962af12d80cd9b90100000000000041000000410000000000000000000000b90100000c2f00639f4445000300000000000000240062af12d80cd90400000000007d100000b901000000000000085800008902000007090000006f001fffff0000110e00bf0c32008003faff0000faff00001502009201";
 const OOB_AF_AUTO: &str = "ffffffffd8400000002500ff9473ffffffffffff000000000000000006000000000000000c000000000000008b0018280062af12d80cd962af12d80cd9b90100000000000041000000410000000000000000000000ba0100000c2f00639f4445000300000000000000240062af12d80cd90400000000007d100000b90100001e000000085800008b02000007090000006f001fffff0000110e00bf0c32008003faff0000faff00001502009201060900000000000000000000";
-const SYNC_PARAMS: &str = "002400000000060010006e00000010001000000000000000000000000000000000000000";
-const PSF_DWELL_ON: &str = "000000006e006e00";
-const SLOT_BSS: &str = "0080010101009000010000000403000001002a00000000000f020003ffffe22ae22ae22ae22ae22a0000000000001006e22ae22ae22ae22a0000000000000000020028000000000000100200e22ae22ae22ae22ae22a0000000000000000e22ae22ae22ae22a0000000000000200280000000000011002000000000000000000000000000000000010060000000000000000000000000000000000000000";
-const ELECTION_TREE: &str = "000000410000000005ba000001030462af12d80cd9410000000000000000000000000000000000000000";
-const OPMODE: &str = "0102000062af12d80cd9000000000000000000000000000000000000";
-
-/// Event codes of the firmware.
-const EV_ACTION_FRAME_RX: u32 = 0x4b;
-const EV_ROLE: u32 = 0x61;
-const EV_AWDL: u32 = 0x62;
 
 /// Apple OUI action frame of type AWDL
 const AWDL_AF: [u8; 5] = [0x7f, 0x00, 0x17, 0xf2, 0x08];
@@ -42,6 +31,11 @@ const TLV_SERVICE_RESPONSE: u8 = 0x02;
 const TLV_SERVICE_PARAMS: u8 = 0x06;
 const TLV_ARPA: u8 = 0x10;
 const TLV_VERSION: u8 = 0x15;
+const TLV_HT_CAPS: u8 = 0x07;
+const TLV_VHT_CAPS: u8 = 0x11;
+/// HT capabilities element: id and length of its 26 byte body
+const HT_IE: [u8; 2] = [0x2d, 0x1a];
+const VHT_IE_ID: u8 = 0xbf;
 const TLV_ELECTION_V2: u8 = 0x18;
 
 /// The compressed name macOS uses for _airdrop._tcp.local in PTR records.
@@ -135,6 +129,24 @@ pub struct Peer {
     /// AirDrop service instance and port, from its PTR and SRV records
     pub airdrop: Option<(String, u16)>,
     pub last_seen: Option<Instant>,
+    /// HT and VHT capabilities elements for awdl_peer_op, built from its
+    /// TLVs as macOS builds them
+    pub ies: Vec<u8>,
+}
+
+/// The HT capabilities element from the value of an HT capabilities TLV:
+/// two leading bytes, then the start of the element body.
+fn ht_ie(value: &[u8]) -> Option<Vec<u8>> {
+    let body = value.get(2..)?;
+    let mut ie = HT_IE.to_vec();
+    ie.extend(body.iter().take(HT_IE[1] as usize));
+    ie.resize(2 + HT_IE[1] as usize, 0);
+    Some(ie)
+}
+
+/// The VHT capabilities element, the whole value of a VHT capabilities TLV.
+fn vht_ie(value: &[u8]) -> Option<Vec<u8>> {
+    (value.len() >= 2 && value[0] == VHT_IE_ID && value.len() == 2 + value[1] as usize).then(|| value.to_vec())
 }
 
 /// The AirDrop service this device advertises while it receives.
@@ -147,63 +159,42 @@ pub struct Service {
 
 pub struct Awdl {
     service: Option<Service>,
-    genl: Genl,
-    primary: u32,
+    nl: Nl80211,
     pub mac: [u8; 6],
     pub ifindex: u32,
     pub ifname: String,
     host: String,
     master: Option<Election>,
     pub peers: HashMap<[u8; 6], Peer>,
-    peer_ops: Vec<[u8; 6]>,
-    /// slot_bss as macOS sends it, with SDB, on chips other than the BCM4364
-    sdb: bool,
-}
-
-/// PCI device id of the BCM4364
-const BCM4364: u16 = 0x4464;
-
-/// The PCI device id of the chip behind the network interface `ifindex`.
-fn pci_device(ifindex: u32) -> Option<u16> {
-    let name = ifname(ifindex).ok()?;
-    let id = std::fs::read_to_string(format!("/sys/class/net/{name}/device/device")).ok()?;
-    u16::from_str_radix(id.trim().trim_start_matches("0x"), 16).ok()
+    /// Peers added to the firmware, with the elements they were added with
+    peer_ops: HashMap<[u8; 6], Vec<u8>>,
 }
 
 impl Awdl {
     /// Creates the AWDL interface and starts AWDL with the firmware.
-    pub fn up(mut genl: Genl, primary: u32, mac: [u8; 6], host: String) -> Result<Self> {
-        let device = pci_device(primary);
-        let sdb = device != Some(BCM4364);
-        info!("Wi-Fi chip {:04x}, slot_bss {}", device.unwrap_or(0), if sdb { "with SDB" } else { "without SDB" });
-        let ifindex = genl.up(primary, mac)?;
-        let ifname = ifname(ifindex)?;
+    pub fn up(nl: Nl80211, mac: [u8; 6], host: String) -> Result<Self> {
         let mut awdl = Awdl {
             service: None,
-            genl,
-            primary,
+            nl,
             mac,
-            ifindex,
-            ifname,
+            ifindex: 0,
+            ifname: String::new(),
             host,
             master: None,
             peers: HashMap::new(),
-            peer_ops: Vec::new(),
-            sdb,
+            peer_ops: HashMap::new(),
         };
-        if let Err(err) = awdl.enable() {
-            awdl.down();
-            return Err(err);
-        }
+        let (payload, oob) = awdl.frames();
+        awdl.ifindex = awdl.nl.start(mac, &payload, &oob)?;
+        awdl.ifname = match ifname(awdl.ifindex) {
+            Ok(name) => name,
+            Err(err) => {
+                awdl.down();
+                return Err(err);
+            }
+        };
+        awdl.configure_netdev();
         Ok(awdl)
-    }
-
-    fn set(&mut self, name: &str, data: &[u8]) -> Result<()> {
-        let fwerr = self.genl.set(self.primary, name, data, false)?;
-        if fwerr != 0 {
-            debug!("set {name}: firmware error {fwerr}");
-        }
-        Ok(())
     }
 
     fn template(&self, hexstr: &str) -> Vec<u8> {
@@ -305,84 +296,16 @@ impl Awdl {
         self.refresh()
     }
 
-    /// slot_bss as macOS sent it for the BCM4377, with SDB. The BCM4364 gets
-    /// the SDB off form: byte 0x0c 9, every chanspec in slice 0. The SDB on
-    /// form traps the BCM4364 firmware while the station is on 5 GHz.
-    fn slot_bss(&self) -> Vec<u8> {
-        let mut buf = self.template(SLOT_BSS);
-        if self.sdb {
-            return buf;
-        }
-        buf[0x0c] = 9;
-        for i in (0..32).step_by(2) {
-            let (s0, s1) = (0x4c + i, 0x78 + i);
-            if buf[s0..s0 + 2] == [0, 0] {
-                let v = [buf[s1], buf[s1 + 1]];
-                buf[s0..s0 + 2].copy_from_slice(&v);
-            }
-            buf[s1..s1 + 2].copy_from_slice(&[0, 0]);
-        }
-        buf
+    /// The TLVs of awdl_payload and awdl_oob_af_auto, without the headers
+    /// the driver adds.
+    fn frames(&self) -> (Vec<u8>, Vec<u8>) {
+        (self.payload()[2..].to_vec(), self.oob_af_auto()[46..].to_vec())
     }
 
-    fn election_tree(&self) -> Vec<u8> {
-        let mut buf = self.template(ELECTION_TREE);
-        if let Some(m) = self.master {
-            buf[0x0f..0x15].copy_from_slice(&m.master);
-            buf[0x15..0x19].copy_from_slice(&m.master_metric.to_le_bytes());
-            buf[0x19] = (m.distance + 1) as u8;
-        }
-        buf
-    }
-
-    /// Role byte 1: 0 SLAVE, 2 MASTER. Bytes 4 to 9: the address synced to.
-    fn opmode(&self) -> Vec<u8> {
-        let mut buf = self.template(OPMODE);
-        if let Some(m) = self.master {
-            buf[1] = 0;
-            buf[4..10].copy_from_slice(&m.master);
-        }
-        buf
-    }
-
-    /// The enable sequence of macOS.
-    fn enable(&mut self) -> Result<()> {
-        let zero = [0u8; 4];
-        self.set("awdl_payload", &self.payload())?;
-        self.set("awdl_aftxmode", &zero)?;
-        self.set("awdl_sync_params", &hex(SYNC_PARAMS))?;
-        self.set("awdl_osoc_chan", &zero)?;
-        self.set("awdl_config", &[0x83, 0, 0, 0])?;
-        self.set("awdl_psf_dwell", &hex(PSF_DWELL_ON))?;
-        self.set("slot_bss", &self.slot_bss())?;
-        self.set("awdl_payload", &self.payload())?;
-        self.set("awdl_election_tree", &self.election_tree())?;
-        self.set("awdl", &[1, 0, 0, 0])?;
-        self.set("awdl_presencemode", &[4, 0, 0, 0])?;
-        self.set("slot_bss", &self.slot_bss())?;
-        self.refresh()?;
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        self.set("awdl_aftxmode", &zero)?;
-        self.set("awdl_osoc_chan", &[0x2c, 0, 0, 0])?;
-        self.configure_netdev();
-        Ok(())
-    }
-
-    /// The group macOS repeats while AWDL is up.
+    /// Sends the current TLVs, macOS repeats them while AWDL is up.
     pub fn refresh(&mut self) -> Result<()> {
-        self.set("awdl_oob_af_auto", &self.oob_af_auto())?;
-        self.set("awdl_payload", &self.payload())?;
-        self.set("awdl_sync_params", &hex(SYNC_PARAMS))?;
-        self.set("awdl_opmode", &self.opmode())?;
-        self.set("awdl_election_tree", &self.election_tree())?;
-        self.set("awdl_sync_params", &hex(SYNC_PARAMS))?;
-        Ok(())
-    }
-
-    /// Stops the search phase settings macOS changes 5 s after the enable.
-    pub fn settle(&mut self) -> Result<()> {
-        self.set("awdl_config", &[0x73, 0, 0, 0])?;
-        self.set("awdl_psf_dwell", &[0u8; 8])
+        let (payload, oob) = self.frames();
+        self.nl.set_frames(&payload, &oob)
     }
 
     /// awdl0 outside NetworkManager, with an EUI-64 link local address that
@@ -398,11 +321,11 @@ impl Awdl {
 
     /// Updates master and peers from a firmware event.
     pub fn handle_event(&mut self, ev: &Event) -> Result<()> {
-        match ev.code {
-            EV_ROLE => debug!("AWDL role {}", ev.status),
-            EV_ACTION_FRAME_RX | EV_AWDL => {
-                if let Some(body) = find_af(&ev.data) {
-                    self.handle_frame(ev.addr, body)?;
+        match ev {
+            Event::Role(role) => debug!("AWDL role {role}"),
+            Event::Frame { addr, body } => {
+                if body.len() > AWDL_AF_HDR && body.starts_with(&AWDL_AF) {
+                    self.handle_frame(*addr, body)?;
                 }
             }
             _ => {}
@@ -415,8 +338,12 @@ impl Awdl {
         let mut host = None;
         let mut airdrop = None;
         let mut instance = None;
+        let mut ht = None;
+        let mut vht = None;
         for (kind, value) in tlvs(&body[AWDL_AF_HDR..]) {
             match kind {
+                TLV_HT_CAPS => ht = ht_ie(value),
+                TLV_VHT_CAPS => vht = vht_ie(value),
                 TLV_ELECTION_V2 if value.len() >= 24 => {
                     election = Some(Election {
                         master: value[0..6].try_into().unwrap(),
@@ -452,6 +379,14 @@ impl Awdl {
         let new = !self.peers.contains_key(&addr);
         let peer = self.peers.entry(addr).or_insert_with(|| Peer { mac: addr, ..Default::default() });
         peer.last_seen = Some(now);
+        let mut ies_changed = false;
+        if let Some(ht) = ht {
+            let ies: Vec<u8> = ht.into_iter().chain(vht.unwrap_or_default()).collect();
+            if ies != peer.ies {
+                peer.ies = ies;
+                ies_changed = true;
+            }
+        }
         if host.is_some() {
             peer.host = host;
         }
@@ -460,6 +395,10 @@ impl Awdl {
                 info!("AirDrop service {instance} on {} port {port}", mac_str(&addr));
             }
             peer.airdrop = Some((instance, port));
+        }
+        // A peer added before its capabilities were known gets them now
+        if ies_changed && self.peer_ops.contains_key(&addr) {
+            self.update_peer(addr)?;
         }
         if new {
             info!("AWDL peer {}", mac_str(&addr));
@@ -487,6 +426,11 @@ impl Awdl {
         if better {
             info!("following AWDL master {} metric {:#x}", mac_str(&e.master), e.master_metric);
             self.master = Some(e);
+            self.nl.set_sync(Some(Master {
+                addr: e.master,
+                metric: e.master_metric,
+                distance: (e.distance + 1) as u8,
+            }))?;
             self.refresh()?;
         } else if same {
             // Keep the counter of the current master up to date
@@ -498,7 +442,7 @@ impl Awdl {
     /// Makes a peer reachable for unicast: neighbour entry for its link
     /// local address and the firmware peer entry.
     pub fn add_peer(&mut self, mac: [u8; 6]) -> Result<()> {
-        if self.peer_ops.contains(&mac) {
+        if self.peer_ops.contains_key(&mac) {
             return Ok(());
         }
         let ll = link_local(&mac);
@@ -508,42 +452,33 @@ impl Awdl {
         if !status.success() {
             warn!("neighbour entry for {ll} failed");
         }
-        let mut op = vec![0u8, 0];
-        op.extend_from_slice(&mac);
-        op.push(1);
-        op.resize(0x25, 0);
-        self.set("awdl_peer_op", &op)?;
-        self.peer_ops.push(mac);
+        self.peer_ops.insert(mac, Vec::new());
+        self.update_peer(mac)
+    }
+
+    /// Sends the peer with its current capabilities elements to the firmware.
+    fn update_peer(&mut self, mac: [u8; 6]) -> Result<()> {
+        let ies = self.peers.get(&mac).map(|p| p.ies.clone()).unwrap_or_default();
+        if !ies.is_empty() {
+            debug!("peer {} with HT/VHT capabilities, {} bytes", mac_str(&mac), ies.len());
+        }
+        self.nl.peer_add(mac, &ies)?;
+        self.peer_ops.insert(mac, ies);
         Ok(())
     }
 
     /// Removes peers and the interface.
     pub fn down(&mut self) {
-        for mac in std::mem::take(&mut self.peer_ops) {
-            let mut op = vec![0u8, 1];
-            op.extend_from_slice(&mac);
-            op.push(0);
-            let _ = self.set("awdl_peer_op", &op);
+        for mac in std::mem::take(&mut self.peer_ops).into_keys() {
+            let _ = self.nl.peer_del(mac);
         }
-        let _ = self.set("awdl", &[0u8; 4]);
-        if let Err(err) = self.genl.down(self.primary) {
+        if let Err(err) = self.nl.stop() {
             warn!("AWDL interface down: {err:#}");
         }
     }
 }
 
 /// The AWDL action frame body inside the data of an event.
-fn find_af(data: &[u8]) -> Option<&[u8]> {
-    for off in [16, 24] {
-        if let Some(body) = data.get(off..) {
-            if body.len() > AWDL_AF_HDR && body.starts_with(&AWDL_AF) {
-                return Some(body);
-            }
-        }
-    }
-    None
-}
-
 fn tlv(kind: u8, value: &[u8]) -> Vec<u8> {
     let mut out = vec![kind];
     out.extend_from_slice(&(value.len() as u16).to_le_bytes());
@@ -678,5 +613,32 @@ mod tests {
         assert_eq!(out.len(), p.len() + 4);
         assert_eq!(u16::from_le_bytes([out[0], out[1]]), 0x8b + 4);
         assert_eq!(&out[out.len() - 9..out.len() - 5], &[0x10, 1, 0, 0xaa]);
+    }
+}
+
+#[cfg(test)]
+mod peer_ie_tests {
+    use super::*;
+
+    /// The awdl_peer_op macOS 15.4.1 sent for this device starts its HT
+    /// element with 2d1a6f001fffff0000 and carries the VHT element
+    /// bf0c32008003faff0000faff0000. Both come from the TLVs we send.
+    #[test]
+    fn builds_the_elements_macos_built_from_our_tlvs() {
+        let payload = hex(PAYLOAD);
+        let mut ht = None;
+        let mut vht = None;
+        for (kind, value) in tlvs(&payload[2..]) {
+            match kind {
+                TLV_HT_CAPS => ht = ht_ie(value),
+                TLV_VHT_CAPS => vht = vht_ie(value),
+                _ => {}
+            }
+        }
+        let ht = ht.expect("HT TLV in the payload");
+        assert_eq!(ht.len(), 28);
+        assert_eq!(ht[..9], hex("2d1a6f001fffff0000")[..]);
+        assert!(ht[9..].iter().all(|&b| b == 0));
+        assert_eq!(vht.expect("VHT TLV in the payload"), hex("bf0c32008003faff0000faff0000"));
     }
 }

@@ -32,7 +32,7 @@ use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{OwnedFd, OwnedObjectPath};
 use zbus::{Connection, fdo, interface, proxy};
 
-use crate::airdrop::File;
+use crate::airdrop::{File, SendProgress};
 use crate::ble::{AirDropBeacon, BeaconScanner, BluetoothOff};
 use crate::logind;
 use crate::receive::{Ask, Handler};
@@ -44,6 +44,16 @@ pub const PATH: &str = "/org/t2drop";
 const LINGER: Duration = Duration::from_secs(15);
 /// The service exits after this long without AWDL and without an agent.
 const EXIT_IDLE: Duration = Duration::from_secs(60);
+/// Longest pause of the housekeeping between two failed AWDL starts
+const AWDL_RETRY_MAX: Duration = Duration::from_secs(300);
+
+/// Pause after the given number of failed AWDL starts in a row: 2 s,
+/// doubled each time, at most AWDL_RETRY_MAX. Firmware without AWDL fails
+/// every time, a try each second filled the kernel log.
+fn awdl_retry_delay(failures: u32) -> Duration {
+    let secs = 1u64 << failures.min(9);
+    Duration::from_secs(secs).min(AWDL_RETRY_MAX)
+}
 /// Upper limit of one transfer, the files are held in memory.
 const MAX_BYTES: u64 = 2 << 30;
 const MAX_FILES: usize = 256;
@@ -70,7 +80,8 @@ trait Agent1 {
 #[derive(Default)]
 struct State {
     session: Option<Session>,
-    /// The own advertisement while browsing or sending
+    /// The own advertisement while browsing or sending, until the receiver
+    /// accepted
     beacon: Option<AirDropBeacon>,
     /// Looks for senders while an agent can take transfers
     scanner: Option<BeaconScanner>,
@@ -79,6 +90,9 @@ struct State {
     listeners: HashSet<String>,
     agent: Option<Agent>,
     sending: usize,
+    /// Sends the receiver accepted. Bluetooth and Wi-Fi share the radio,
+    /// the advertisement and the sender scan stay off while they upload.
+    uploading: usize,
     /// Accepted incoming transfers still connected
     incoming: usize,
     /// Whether a sender was near at the last housekeeping
@@ -90,6 +104,12 @@ struct State {
     sleeping: bool,
     /// Last problem logged by the housekeeping, logged once
     problem: String,
+    /// Failed AWDL starts by the housekeeping in a row
+    awdl_failures: u32,
+    /// The housekeeping starts AWDL again only from then on
+    awdl_retry_at: Option<Instant>,
+    /// Whether the last housekeeping wanted AWDL
+    awdl_wanted: bool,
 }
 
 impl State {
@@ -107,6 +127,9 @@ pub struct Sender {
     connection: Arc<Mutex<Option<Connection>>>,
     /// Serializes starting a session, two callers must not start two.
     starting: Arc<tokio::sync::Mutex<()>>,
+    /// Serializes starting the advertisement. Two at once registered two,
+    /// the one not kept stayed with BlueZ until its slots ran out.
+    beacon_starting: Arc<tokio::sync::Mutex<()>>,
     /// Whether the session advertises the own AirDrop service
     receiving: Arc<AtomicBool>,
 }
@@ -120,6 +143,7 @@ impl Sender {
             state: Arc::default(),
             connection: Arc::default(),
             starting: Arc::default(),
+            beacon_starting: Arc::default(),
             receiving: Arc::default(),
         }
     }
@@ -137,14 +161,12 @@ impl Sender {
 
     /// Starts the own AirDrop advertisement unless it runs already.
     async fn ensure_beacon(&self) -> Result<()> {
+        let _starting = self.beacon_starting.lock().await;
         if self.state.lock().unwrap().beacon.is_some() {
             return Ok(());
         }
         let beacon = AirDropBeacon::start().await?;
-        let mut state = self.state.lock().unwrap();
-        if state.beacon.is_none() {
-            state.beacon = Some(beacon);
-        }
+        self.state.lock().unwrap().beacon = Some(beacon);
         Ok(())
     }
 
@@ -236,8 +258,11 @@ impl Sender {
             return false;
         }
         let usable = self.agent_usable().await;
-        let has_agent = self.state.lock().unwrap().agent.is_some();
-        self.update_scanner(has_agent && usable).await;
+        let (has_agent, uploading) = {
+            let state = self.state.lock().unwrap();
+            (state.agent.is_some(), state.uploading > 0)
+        };
+        self.update_scanner(has_agent && usable && !uploading).await;
 
         let (receive, want_beacon, want_awdl) = {
             let mut state = self.state.lock().unwrap();
@@ -247,8 +272,9 @@ impl Sender {
                 info!("AirDrop sender {}", if sender_near { "nearby" } else { "gone" });
             }
             let receive = state.agent.is_some() && (!state.listeners.is_empty() || sender_near);
-            let want_beacon = !state.browsers.is_empty() || state.sending > 0;
-            let want_awdl = want_beacon || receive || state.incoming > 0;
+            let browsing_or_sending = !state.browsers.is_empty() || state.sending > 0;
+            let want_beacon = browsing_or_sending && state.uploading == 0;
+            let want_awdl = browsing_or_sending || receive || state.incoming > 0;
             (receive, want_beacon, want_awdl)
         };
         self.receiving.store(receive, Ordering::Relaxed);
@@ -262,12 +288,36 @@ impl Sender {
         }
 
         if want_awdl {
-            self.state.lock().unwrap().idle_since = None;
-            if let Err(err) = self.ensure_session().await {
-                self.state.lock().unwrap().report(format!("AWDL: {err:#}"));
+            let retry = {
+                let mut state = self.state.lock().unwrap();
+                state.idle_since = None;
+                if !state.awdl_wanted {
+                    // A new demand tries at once
+                    state.awdl_wanted = true;
+                    state.awdl_failures = 0;
+                    state.awdl_retry_at = None;
+                }
+                state.awdl_retry_at.is_none_or(|at| Instant::now() >= at)
+            };
+            if retry {
+                let result = self.ensure_session().await;
+                let mut state = self.state.lock().unwrap();
+                match result {
+                    Ok(()) => {
+                        state.awdl_failures = 0;
+                        state.awdl_retry_at = None;
+                    }
+                    Err(err) => {
+                        state.awdl_failures += 1;
+                        let delay = awdl_retry_delay(state.awdl_failures);
+                        state.awdl_retry_at = Some(Instant::now() + delay);
+                        state.report(format!("AWDL: {err:#}, next try in {} s", delay.as_secs()));
+                    }
+                }
             }
             return false;
         }
+        self.state.lock().unwrap().awdl_wanted = false;
         let session = {
             let mut state = self.state.lock().unwrap();
             let since = *state.idle_since.get_or_insert_with(Instant::now);
@@ -442,6 +492,7 @@ impl Sender {
     /// once the receiver has them or fails with the reason.
     async fn send(
         &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         id: String,
         names: Vec<String>,
         fds: Vec<OwnedFd>,
@@ -455,10 +506,35 @@ impl Sender {
             .map_err(|e| Error::Failed(e.to_string()))?
             .map_err(failed)?;
         let (reply, result) = mpsc::channel();
+        let (progress, progress_rx) = mpsc::channel();
+        // Ends when the send drops its sender
+        let emitter = emitter.to_owned();
+        let handle = tokio::runtime::Handle::current();
+        let progress_id = id.clone();
+        let progress_state = self.state.clone();
+        std::thread::spawn(move || {
+            let mut accepted = false;
+            while let Ok(p) = progress_rx.recv() {
+                let (sent, total) = match p {
+                    SendProgress::Accepted => {
+                        if !accepted {
+                            progress_state.lock().unwrap().uploading += 1;
+                        }
+                        accepted = true;
+                        (0, 0)
+                    }
+                    SendProgress::Sent(sent, total) => (sent, total),
+                };
+                let _ = handle.block_on(Self::send_progress(&emitter, &progress_id, accepted, sent, total));
+            }
+            if accepted {
+                progress_state.lock().unwrap().uploading -= 1;
+            }
+        });
         {
             let mut state = self.state.lock().unwrap();
             let session = state.session.as_ref().ok_or_else(|| Error::Failed("not browsing".into()))?;
-            session.send(SendRequest { id, sender: sender_name, files, reply }).map_err(failed)?;
+            session.send(SendRequest { id, sender: sender_name, files, reply, progress }).map_err(failed)?;
             state.sending += 1;
         }
         let r = tokio::task::spawn_blocking(move || result.recv()).await;
@@ -472,6 +548,18 @@ impl Sender {
 
     #[zbus(signal)]
     async fn receivers_changed(emitter: &SignalEmitter<'_>, receivers: Vec<(String, String)>) -> zbus::Result<()>;
+
+    /// Progress of a Send to `id`: whether the receiver accepted, and the
+    /// bytes of the upload sent so far of `total`. Sent before the
+    /// acceptance only fill buffers.
+    #[zbus(signal)]
+    async fn send_progress(
+        emitter: &SignalEmitter<'_>,
+        id: &str,
+        accepted: bool,
+        sent: u64,
+        total: u64,
+    ) -> zbus::Result<()>;
 }
 
 #[interface(name = "org.t2drop.Receiver1")]
@@ -644,4 +732,16 @@ pub async fn run() -> Result<()> {
         warn!("release {BUS_NAME}: {err}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn awdl_retries_back_off_to_five_minutes() {
+        let delays: Vec<u64> = (1..=10).map(|n| awdl_retry_delay(n).as_secs()).collect();
+        assert_eq!(delays, [2, 4, 8, 16, 32, 64, 128, 256, 300, 300]);
+        assert_eq!(awdl_retry_delay(u32::MAX), AWDL_RETRY_MAX);
+    }
 }

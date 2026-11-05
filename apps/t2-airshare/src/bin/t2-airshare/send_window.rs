@@ -134,6 +134,8 @@ struct Ui {
     status: adw::StatusPage,
     list: gtk::ListBox,
     progress: gtk::ProgressBar,
+    /// the progress bar moves until the AirDrop receiver accepted
+    pulsing: Rc<Cell<bool>>,
     tx: async_channel::Sender<Event>,
     files: Vec<PathBuf>,
     /// Quick Share discovery and the running send
@@ -156,7 +158,10 @@ impl Ui {
         }
     }
 
-    /// AirDrop looks for receivers only while the window is active.
+    /// AirDrop looks for receivers only while the window is active. Its
+    /// search pauses the Quick Share advertisements of the receiver
+    /// service, a send window left open in the background must not keep
+    /// this machine hidden from phones.
     fn set_active(&self, active: bool) {
         let mut task = self.airdrop.borrow_mut();
         if active && self.looking.get() {
@@ -222,9 +227,28 @@ impl Ui {
             Via::AirDrop(id) => {
                 self.status.set_title(&format!("Accept on {name}"));
                 self.progress.set_visible(true);
-                self.progress.pulse();
+                self.progress.set_fraction(0.0);
+                // Moves while the receiver has not accepted yet
+                self.pulsing.set(true);
+                let bar = self.progress.clone();
+                let pulsing = self.pulsing.clone();
+                glib::timeout_add_local(std::time::Duration::from_millis(150), move || {
+                    if pulsing.get() && bar.is_visible() {
+                        bar.pulse();
+                        glib::ControlFlow::Continue
+                    } else {
+                        glib::ControlFlow::Break
+                    }
+                });
+                let progress_tx = tx.clone();
                 runtime().spawn(async move {
-                    let result = airdrop::send(&id, &files, &local_name())
+                    let report = move |p| {
+                        let _ = progress_tx.try_send(match p {
+                            airdrop::SendState::Accepted => Event::Sent(0, 1),
+                            airdrop::SendState::Sent(sent, total) => Event::Sent(sent, total),
+                        });
+                    };
+                    let result = airdrop::send(&id, &files, &local_name(), report)
                         .await
                         .map(|()| SendOutcome::Sent)
                         .map_err(|err| format!("{err:#}"));
@@ -283,10 +307,7 @@ pub fn open(app: &adw::Application, files: Vec<PathBuf>) {
     let status = adw::StatusPage::builder()
         .icon_name("network-wireless-symbolic")
         .title("Looking for devices")
-        .description(
-            "Phones have to be in the same Wi-Fi, with Bluetooth on and Quick Share \
-             visible to everyone. Macs, iPhones and iPads need AirDrop for everyone.",
-        )
+        .description("Quick Share and AirDrop devices")
         .vexpand(true)
         .build();
     let list = gtk::ListBox::builder()
@@ -341,6 +362,7 @@ pub fn open(app: &adw::Application, files: Vec<PathBuf>) {
         status: status.clone(),
         list: list.clone(),
         progress: progress.clone(),
+        pulsing: Rc::default(),
         tx: tx.clone(),
         files,
         tasks: RefCell::default(),
@@ -455,14 +477,16 @@ pub fn open(app: &adw::Application, files: Vec<PathBuf>) {
                     progress.set_fraction(0.0);
                 }
                 Event::Sent(sent, total) => {
+                    ui.pulsing.set(false);
                     status.set_title("Sending");
                     progress.set_fraction(sent as f64 / total.max(1) as f64);
                 }
                 Event::Done(result) => {
+                    ui.pulsing.set(false);
                     progress.set_visible(false);
                     match result {
                         Ok(SendOutcome::Sent) => {
-                            status.set_icon_name(Some("emblem-ok-symbolic"));
+                            status.set_icon_name(Some("object-select-symbolic"));
                             status.set_title("Sent");
                             status.set_description(None);
                         }
