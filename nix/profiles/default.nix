@@ -19,15 +19,12 @@
 # not import it directly: pick a concrete profile (e.g. ./macbookpro16-1.nix).
 {
   lib,
-  config,
   pkgs,
   ...
 }:
 
 {
   imports = [ ../modules ];
-
-  services.t2-touchbar.users = lib.mkDefault [ config.system.primaryUser ];
 
   # The T2 bridge (05ac:8233) is a CDC-NCM link; cdc_mbim can claim the
   # interface ahead of cdc_ncm and break the bridgeOS services that t2-services
