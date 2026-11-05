@@ -39,15 +39,12 @@
     # gpu-runtime-pm amdgpu (GMUX runtime PM, Navi 14 UCLK cap).
     gpuRuntimePm.enable = true;
     gpuControl.mode = "hybrid";
+    gpuControl.hybridAtBoot = lib.mkDefault true;
   };
 
   services.t2-touchbar.enable = true;
   services.kait2en-suspend.enable = true;
   services.kait2en-rtc-sync.enable = true;
-  # Shared bridge-link integration (NM "Apple T2 Bridge" link-local profile +
-  # suspend hook runner), and the bridgeOS services upstream installs on every
-  # T2 Mac: AVE (t2remote) and the Touch ID bridge for fprintd.
-  services.t2-services.enable = true;
   services.t2-ave.enable = true;
   services.t2-touchid.enable = true;
   services.t2-fan-control.enable = true;
