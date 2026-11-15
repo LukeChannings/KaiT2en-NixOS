@@ -182,11 +182,9 @@ in
       type = lib.types.bool;
       default = true;
       description = ''
-        Add `amdgpu.aspm=1`. The Fedora installer now adds it on every model
-        except the MacBookPro16,1, whose Navi 14 drops off the PCIe bus under
-        load with forced ASPM. Upstream decides by DMI product name, which Nix
-        eval cannot read, so this defaults to the generic branch and the
-        MacBookPro16,1 profile turns it off.
+        Add `amdgpu.aspm=1`. The Fedora installer adds it on every model
+        (it dropped its MacBookPro16,1 exception, c5760b1). Kept as an option
+        so a machine can still opt out.
       '';
     };
 
@@ -204,10 +202,23 @@ in
           generic branch).
         - `"policy"` — only `pcie_aspm.policy=powersave`; iMacs/iMac Pro, whose
           Ethernet controllers do not survive forced ASPM.
-        - `"firmware"` — neither; the MacBookPro16,1, leaving its Navi 14 link
-          to the firmware and amdgpu.
+        - `"firmware"` — neither, leaving ASPM to the firmware. No model uses
+          it since upstream dropped the MacBookPro16,1 exception (c5760b1).
 
         Set per model by the profiles.
+      '';
+    };
+
+    pciePortsCompat = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Add `pcie_ports=compat`. Upstream's installer now strips it everywhere
+        (the Thunderbolt runtime PM, {option}`hardware.kait2en.thunderbolt`,
+        needs the PCIe port services) except on the iMacPro1,1, which hangs in
+        the SMP bring-up on resume from S3 without it. Upstream decides by DMI
+        product name, which Nix eval cannot read, so this follows the generic
+        branch; an iMacPro1,1 sets it.
       '';
     };
 
@@ -360,22 +371,28 @@ in
     # initramfs — a superset of the upstream `module_blacklist=` cmdline arg.
     boot.blacklistedKernelModules = cfg.blacklistedModules;
 
+    # install-kernel-args.sh ADD_ARGS, minus its DMI-conditional entries,
+    # which are the options below.
     boot.kernelParams = [
       "i915.enable_guc=2"
       "intel_iommu=on"
       "iommu=pt"
-      # Upstream dropped pm_async=off once t2bce fixed async PM, then restored
-      # it because brcmfmac refuses to suspend async (b53cacd). pci=noaer stays
-      # dropped.
-      "pm_async=off"
-      # brcmfmac.p2pon=0 is gone (upstream a3b86a8): P2P only came up because
-      # brcmfmac matched the firmware's "hp2p" capability as "p2p", fixed in
-      # the wireless series (hardware.kait2en.wireless) and harmless without
-      # it, since p2pon already defaults off.
-      "pcie_ports=compat"
+      # ACPI denies the OS AER and pcie_ports=native would force it; with it
+      # off, resume is no longer held up by a blocked embedded controller
+      # (upstream 8ca2fb3, back again since d0f2e9e).
+      "pci=noaer"
       "mem_sleep_default=deep"
       "initcall_blacklist=cmos_init,magicmouse_driver_init"
     ]
+    # Upstream's REMOVE_ARGS now strips pm_async=off: with the runtime
+    # wireless series the BCM4377 and BCM4364 pass S3 with asynchronous
+    # suspend. The stock brcmfmac still refuses to suspend async (b53cacd),
+    # so a system without hardware.kait2en.wireless keeps the old argument.
+    # (brcmfmac.p2pon=0 is gone for good, upstream a3b86a8: p2pon defaults
+    # off, and the series fixed the "hp2p" capability match that turned it
+    # on.)
+    ++ lib.optional (!cfg.wireless.enable) "pm_async=off"
+    ++ lib.optional cfg.pciePortsCompat "pcie_ports=compat"
     ++ lib.optional (cfg.pcieAspm == "force") "pcie_aspm=force"
     ++ lib.optional (cfg.pcieAspm != "firmware") "pcie_aspm.policy=powersave"
     ++ lib.optionals cfg.acpiOsiOverride [

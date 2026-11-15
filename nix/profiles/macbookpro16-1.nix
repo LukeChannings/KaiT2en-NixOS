@@ -35,11 +35,12 @@
     thunderbolt.enable = true;
     # install-i915.sh: the patched i915 on MacBooks with an Intel GPU.
     i915.enable = true;
-    # The Navi 14 (Radeon Pro 5300M/5500M) drops off the PCIe bus under load
-    # with forced ASPM: upstream leaves amdgpu.aspm, pcie_aspm=force and the
-    # powersave policy off on this model and lets firmware/amdgpu decide.
-    amdgpuAspm = false;
-    pcieAspm = "firmware";
+    # Generic installer branch. Upstream used to leave ASPM to the firmware
+    # here (the Navi 14 dropped off the bus under load) and dropped that
+    # exclusion with the board-matched UCLK patch of the gpu-runtime-pm series
+    # (c5760b1).
+    amdgpuAspm = true;
+    pcieAspm = "force";
     # install-apps.sh: t2-hybrid-gpu-control on this model, on top of the
     # gpu-runtime-pm amdgpu (GMUX runtime PM, Navi 14 UCLK cap).
     gpuRuntimePm.enable = true;
