@@ -2,7 +2,7 @@
 # the counterpart of macOS Sidecar. `t2-sidecar on|off|status` (Python + Gio)
 # starts/stops the user unit that runs `t2-sidecar-display`, which holds a
 # Mutter virtual monitor (org.gnome.Mutter.ScreenCast.RecordVirtual). The T2
-# encodes the stream through t2bce_sidecar (built with the t2bce stack).
+# encodes the stream through t2-sidecar (built with the apple-t2-bridge stack).
 #
 # Mirrors install.sh: t2-sidecar → bin, t2-sidecar-display → libexec. The two
 # user units (t2-sidecar.service, t2-sidecar-sunshine.service) hardcode

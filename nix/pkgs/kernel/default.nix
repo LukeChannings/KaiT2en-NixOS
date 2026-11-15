@@ -24,7 +24,7 @@
 # `boot.kernelPackages`, and build the T2 modules against `kait2enKernel`
 # itself (see ../../modules and ../../modules/kait2en-kernel).
 #
-# Config. `t2bce_ave` (in the t2bce stack) is a V4L2 mem2mem encoder and links
+# Config. `t2-ave` (in the apple-t2-bridge stack) is a V4L2 mem2mem encoder and links
 # against the kernel's `v4l2-mem2mem` helper (CONFIG_V4L2_MEM2MEM_DEV). That
 # symbol has no prompt — it only exists when a driver selects it — and stock
 # nixpkgs selects none, so modpost fails with undefined `v4l2_m2m_*`. Mirror
@@ -70,12 +70,12 @@ baseKernel.override {
       patch = hidSpiDeviceTypesPatch;
     }
     {
-      name = "kait2en-t2bce-ave-v4l2-mem2mem";
+      name = "kait2en-t2-ave-v4l2-mem2mem";
       patch = null;
       structuredExtraConfig = with pkgs.lib.kernel; {
         MEDIA_TEST_SUPPORT = yes;
         V4L_TEST_DRIVERS = yes;
-        VIDEO_VIM2M = module; # selects V4L2_MEM2MEM_DEV for t2bce_ave
+        VIDEO_VIM2M = module; # selects V4L2_MEM2MEM_DEV for t2-ave
       };
     }
   ];

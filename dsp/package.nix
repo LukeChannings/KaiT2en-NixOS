@@ -12,7 +12,7 @@
 #   * share/wireplumber/wireplumber.conf.d/51-t2-dsp.conf  monitor rules (raw
 #     mic rename, speaker allowed-rates, headphone priority) + the
 #     t2-default-output hook, and share/wireplumber/scripts/t2-default-output.lua
-#   * lib/udev/rules.d/89-t2-dsp.rules  renames the t2bce_audio card's ALSA id
+#   * lib/udev/rules.d/89-t2-dsp.rules  renames the snd-apple-t2 card's ALSA id
 #     to `t2-<profile>` from the DMI product name (/usr/bin/cat → coreutils)
 #
 # The Fedora lifecycle/migration helpers (integration/libexec,

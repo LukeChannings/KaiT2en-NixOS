@@ -11,8 +11,8 @@
 #     `unmanaged-devices` for the fixed T2 NCM MAC:
 #     NetworkManager leaves the link alone (upstream 3390f69), because it took
 #     the link down on PrepareForSleep before the suspend hooks could close
-#     their T2 sessions, and bridgeOS then dropped SideCar (and t2bce_vhci with
-#     it) while the host slept. This retires the declarative "Apple T2 Bridge"
+#     their T2 sessions, and bridgeOS then dropped SideCar (and the T2 vhci
+#     with it) while the host slept. This retires the declarative "Apple T2 Bridge"
 #     profile (upstream deleted t2-ncm.nmconnection); it lived in
 #     /run/NetworkManager/system-connections, so it is gone on the next boot.
 #   * udev: integration/udev/90-t2-services-ncm.rules brings the unmanaged
@@ -36,7 +36,8 @@
 #
 # ── t2-ave (services.t2-ave) ───────────────────────────────────────────────
 # kait2en-t2-remote.service (t2-services/t2-ave/integration/systemd): loads
-# t2bce_ave and runs `t2remote daemon`; its suspend hook joins sleep.d.
+# t2-ave (and, optionally, t2-sidecar) and runs `t2remote daemon`; its suspend
+# hook joins sleep.d.
 #
 # ── t2-touchid (services.t2-touchid) ───────────────────────────────────────
 # kait2en-t2-touchid.service, the fprintd.service drop-in
@@ -261,7 +262,10 @@ in
         wantedBy = [ "multi-user.target" ];
         serviceConfig = {
           Type = "simple";
-          ExecStartPre = "${pkgs.kmod}/bin/modprobe t2bce_ave";
+          ExecStartPre = [
+            "${pkgs.kmod}/bin/modprobe t2-ave"
+            "-${pkgs.kmod}/bin/modprobe t2-sidecar"
+          ];
           ExecStart = "${lib.getExe aveCfg.package} daemon";
           Restart = "on-failure";
           RestartSec = 2;

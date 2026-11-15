@@ -1,7 +1,7 @@
 # t2-ave (`t2remote`): the userspace side of the T2 Apple Video Encoder
 # service. It opens the AVE service session on bridgeOS over the NCM link
 # (shared t2-bridgexpc transport) and serves /run/t2remote.sock; the kernel side
-# is `t2bce_ave`, built with the t2bce stack (modules/default.nix).
+# is `t2-ave`, built with the apple-t2-bridge stack (modules/default.nix).
 #
 # Upstream's Makefile also installs integration/systemd/kait2en-t2-remote.service
 # (@BINDIR@-templated) and the suspend hook integration/systemd/t2-ave-suspend

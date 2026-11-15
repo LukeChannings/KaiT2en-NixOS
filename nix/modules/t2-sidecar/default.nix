@@ -12,7 +12,7 @@
 #     with the T2 yet. Here it is defined only when `sunshine.package` is set.
 #     Without it `t2-sidecar on` just reports that Sunshine did not start.
 #
-# The T2 side is t2bce_sidecar (built with the t2bce stack, autoloaded) and the
+# The T2 side is t2-sidecar (built with the apple-t2-bridge stack, autoloaded) and the
 # T2 link. GNOME-only (Mutter's virtual monitors). Upstream installs it on
 # every T2 Mac; it does nothing without a Sunshine set up by hand, so it is
 # opt-in here and no profile enables it.

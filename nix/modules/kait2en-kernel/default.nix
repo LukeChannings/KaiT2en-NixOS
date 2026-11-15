@@ -3,7 +3,7 @@
 # Apple drivers.
 #
 # On Fedora this is done imperatively by scripts/fedora:
-#   * install-dkms-modules.sh  — DKMS-build t2bce/t2smc/t2bdrm/t2touchbar/…
+#   * install-dkms-modules.sh  — DKMS-build apple-t2-bridge/t2smc/t2bdrm/t2touchbar/…
 #   * install-kernel-args.sh   — grubby --args for IOMMU, ACPI _OSI, deep
 #     sleep, initcall_blacklist and module_blacklist (the conflicting drivers)
 #   * rebuild-initramfs.sh      — dracut --add-drivers for early loading
@@ -80,20 +80,18 @@ in
       type = lib.types.listOf lib.types.str;
       default = [
         "t2smc"
-        # The BCE stack split into four cross-dependent modules upstream. Module
-        # softdeps enforce ordering (audio/vhci `pre: t2bce_core`, core
-        # `post: t2bce_vhci`), but list them in dependency order anyway.
-        "t2bce_dma"
-        "t2bce_core"
-        "t2bce_vhci"
-        "t2bce_audio"
+        # The bridge stack. The vhci and audio drivers bind to devices the
+        # bridge creates (an auxiliary device, the audio PCI function), so
+        # they autoload; listed in dependency order anyway.
+        "apple-t2-bridge"
+        "apple-t2-vhci-hcd"
+        "snd-apple-t2"
         "t2bdrm"
         "t2hid"
         "t2touchbar_bl"
         "t2touchbar_kbd"
         "t2mfi_fastcharge"
         "t2gmux"
-        "t2thunderbolt"
         "t2smp"
         "t2sbs"
         "hid_t2magicmouse"
@@ -105,14 +103,18 @@ in
       description = ''
         Loadable module names (not package names) to load at boot. Note these
         differ from the package names: the `t2touchbar` package builds `t2hid`,
-        `t2touchbar_bl` and `t2touchbar_kbd`, and the `t2bce` package builds the
-        split modules `t2bce_dma`, `t2bce_core`, `t2bce_vhci`, `t2bce_audio`,
-        `t2bce_ave` and `t2bce_sidecar`.
+        `t2touchbar_bl` and `t2touchbar_kbd`, and the `apple-t2-bridge` package
+        builds `apple-t2-bridge`, `apple-t2-vhci-hcd`, `snd-apple-t2`,
+        `t2-ave` and `t2-sidecar`.
 
-        `t2bce_ave` is not loaded here: upstream loads it only from the AVE
-        service unit (`ExecStartPre=modprobe t2bce_ave`), which
-        {option}`services.t2-ave` mirrors. `t2bce_sidecar` is a USB driver and
-        autoloads by modalias when `t2bce_vhci` exposes the Sidecar device.
+        `t2-ave` and `t2-sidecar` are not loaded here: upstream loads them
+        from the AVE service unit (`ExecStartPre=modprobe t2-ave`, `-t2-sidecar`),
+        which {option}`services.t2-ave` mirrors. `t2-sidecar` is a USB driver
+        and also autoloads by modalias when `apple-t2-vhci-hcd` exposes the
+        Sidecar device.
+
+        `t2thunderbolt` is gone: upstream retired it for the patched in-tree
+        driver, {option}`hardware.kait2en.thunderbolt`.
 
         The Touch Bar display's USB configuration (`bConfigurationValue` of
         `05ac:8302`) is selected in userspace by the T2 Touch Bar daemon's
@@ -129,9 +131,8 @@ in
     initrdModules = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [
-        "t2bce_dma"
-        "t2bce_core"
-        "t2bce_vhci"
+        "apple-t2-bridge"
+        "apple-t2-vhci-hcd"
         "t2hid"
         "t2smc"
         "t2sbs"
@@ -139,7 +140,7 @@ in
       description = ''
         Modules to load from the initramfs (early), mirroring upstream's
         steady-state `EARLY_MODULES` in scripts/fedora/rebuild-initramfs.sh
-        (`t2bce_dma t2bce_core t2bce_vhci t2hid t2smc t2sbs`): the BCE +
+        (`apple-t2-bridge apple-t2-vhci-hcd t2hid t2smc t2sbs`): the bridge +
         keyboard essentials, `t2smc` so its SMC-backed RTC sets the wall clock
         early, and `t2sbs` right after it so BAT0 already carries
         `charge_control_end_threshold` when udev/UPower first see it.
@@ -171,9 +172,9 @@ in
         `module_blacklist=` kernel argument the Fedora installer sets. The
         KaiT2en out-of-tree drivers replace these.
 
-        Note `thunderbolt` is no longer blacklisted: upstream reworked
-        `t2thunderbolt` so it no longer conflicts with the in-tree driver (the
-        Fedora installer's BLACKLIST_MODULES dropped it too).
+        Note `thunderbolt` is not blacklisted: upstream retired the
+        `t2thunderbolt` replacement for a patched in-tree driver
+        ({option}`hardware.kait2en.thunderbolt`).
       '';
     };
 

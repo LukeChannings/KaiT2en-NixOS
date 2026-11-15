@@ -13,8 +13,8 @@
 let
   buildKernelModule = args: callPackage ./../nix/kernel-module.nix { inherit kernel; } args;
 
-  # The plain modules: a single `.c` (or `t2bce`'s multi-object tree) compiled
-  # by their own Makefile's default target. Source is the module subdirectory.
+  # The plain modules: a single `.c` compiled by their own Makefile's default
+  # target. Source is the module subdirectory.
   mkSimple =
     {
       pname,
@@ -33,62 +33,32 @@ let
       src = lib.cleanSource (./. + "/${dir}");
     };
 
-  # The BCE stack was split upstream into four cross-dependent modules
-  # (super: t2bce → t2bce_core 0.06 + t2bce_dma + t2bce_vhci + t2bce_audio).
-  # `t2bce_core` links against `t2bce_dma`'s exported symbols; `t2bce_vhci` and
-  # `t2bce_audio` link against `t2bce_core`'s. Their Makefiles find each
-  # sibling's headers and `Module.symvers` by relative path (`../t2bce_dma`,
-  # `../t2bce_core`), so we build all four in a single derivation, in
-  # dependency order, inside one unpacked tree — no KBUILD_EXTRA_SYMBOLS
-  # plumbing needed. Source is the four `t2bce_*` module subdirectories, laid
-  # out as siblings, plus `t2bce_ave` and `t2bce_sidecar`.
-  #
-  # Upstream's `t2bce_stack` DKMS package builds `t2bce_ave` (the T2 Apple
-  # Video Encoder client) and `t2bce_sidecar` (the USB driver for the Sidecar
-  # encoder device t2bce_vhci exposes; no BCE symbols) as fifth and sixth
-  # members, staging both from `t2-services/t2-ave/kernel/` into the stack
-  # tree (see scripts/fedora/install-dkms-modules.sh `copy_module_source`).
-  # t2bce_ave's Makefile prefers a sibling `../t2bce_core`, so we stage them
-  # the same way: copied in next to the other four in postPatch, built last.
-  t2bceModuleSubdirs = [
-    "t2bce_dma"
-    "t2bce_core"
-    "t2bce_vhci"
-    "t2bce_audio"
-  ];
-  t2bceStagedSubdirs = [
-    "t2bce_ave"
-    "t2bce_sidecar"
-  ];
-  t2bceSubdirs = t2bceModuleSubdirs ++ t2bceStagedSubdirs;
-  t2bceStagedSrc = lib.cleanSource ../t2-services/t2-ave/kernel;
-  t2bceSrc = lib.cleanSourceWith {
-    name = "t2bce-source";
-    src = ./.;
-    filter =
-      path: _type:
-      let
-        rel = lib.removePrefix (toString ./. + "/") (toString path);
-        top = lib.head (lib.splitString "/" rel);
-      in
-      lib.elem top t2bceModuleSubdirs;
-  };
+  # The out-of-tree AVE and Sidecar drivers, which upstream keeps with their
+  # userspace in t2-services/t2-ave and builds into the bridge package.
+  t2AveKernelSrc = lib.cleanSource ../t2-services/t2-ave/kernel;
 in
 {
-  # The whole BCE stack (dma + core + vhci + audio + ave + sidecar), built in dependency
-  # order as one derivation. Version tracks modules/t2bce_stack/dkms.conf.
-  t2bce = buildKernelModule {
-    pname = "t2bce";
-    version = "0.01";
-    src = t2bceSrc;
-    buildSubdirs = t2bceSubdirs;
+  # The T2 bridge stack, which replaced the t2bce_* split (dma, core, vhci,
+  # audio) upstream: `apple-t2-bridge` (the Bridge Controller and its DMA
+  # queues), `apple-t2-vhci-hcd` (the virtual USB host for keyboard, trackpad
+  # and Touch Bar) and `snd-apple-t2` (audio), laid out like the kernel tree
+  # and built by one top-level Kbuild. Like install-dkms-modules.sh
+  # `copy_module_source`, `t2-ave` (the AVE encoder client) and `t2-sidecar`
+  # (the USB driver for the Sidecar encoder the vhci exposes) are staged into
+  # the tree as `t2-ave/` and `t2-sidecar/`, where the Kbuild picks them up so
+  # all five share one Module.symvers. Version tracks
+  # modules/apple-t2-bridge/dkms.conf.
+  apple-t2-bridge = buildKernelModule {
+    pname = "apple-t2-bridge";
+    version = "0.1";
+    src = lib.cleanSource ./apple-t2-bridge;
     extraPostPatch = ''
-      for sub in ${lib.escapeShellArgs t2bceStagedSubdirs}; do
-        cp -r ${t2bceStagedSrc}/"$sub" "$sub"
+      for sub in t2-ave t2-sidecar; do
+        cp -r ${t2AveKernelSrc}/"$sub" "$sub"
         chmod -R u+w "$sub"
       done
     '';
-    meta.description = "Apple T2 BCE stack (dma + core + vhci + audio + ave + sidecar)";
+    meta.description = "Apple T2 bridge stack (bridge + vhci + audio + ave + sidecar)";
   };
 
   t2smc = mkSimple {
@@ -105,7 +75,7 @@ in
 
   t2gmux = mkSimple {
     pname = "t2gmux";
-    version = "0.8";
+    version = "0.9";
     meta.description = "Apple T2 GMUX (graphics multiplexer) driver";
   };
 
@@ -157,12 +127,11 @@ in
     meta.description = "Apple T2 Touch Bar HID, USB config selector, backlight and keyboard drivers";
   };
 
-  t2thunderbolt = mkSimple {
-    pname = "t2thunderbolt";
-    version = "0.6";
-    meta.description = "Thunderbolt driver with Apple T2 NHI fixes";
-  };
-
+  # NOTE: `t2thunderbolt` was retired upstream: the patched in-tree
+  # thunderbolt driver (patches/runtime/thunderbolt, scripts/fedora/
+  # install-thunderbolt.sh) replaces it -- see nix/pkgs/thunderbolt and
+  # hardware.kait2en.thunderbolt.
+  #
   # NOTE: `modules/t2sep` is deliberately not packaged: upstream lists it under
   # LEGACY_MODULES (install-dkms-modules.sh removes it; AUTOINSTALL="no").
   # Touch ID moved to the userspace t2-touchid service over the T2 bridge link.
