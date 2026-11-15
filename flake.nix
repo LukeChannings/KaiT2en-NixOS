@@ -243,6 +243,10 @@
                 gpu-runtime-pm = pkgs.callPackage ./nix/pkgs/gpu-runtime-pm { kernel = kait2enKernel; };
                 # brcmfmac + Broadcom Bluetooth with the wireless series (hardware.kait2en.wireless).
                 wireless = pkgs.callPackage ./nix/pkgs/wireless { kernel = kait2enKernel; };
+                # thunderbolt + the thunderbolt series (hardware.kait2en.thunderbolt).
+                thunderbolt = pkgs.callPackage ./nix/pkgs/thunderbolt { kernel = kait2enKernel; };
+                # i915 + drm_display_helper with the i915 series (hardware.kait2en.i915).
+                i915 = pkgs.callPackage ./nix/pkgs/i915 { kernel = kait2enKernel; };
                 t2bce_audio-alsa-ucm-conf = audioUcmConf;
               };
           in

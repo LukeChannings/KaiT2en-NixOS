@@ -278,6 +278,43 @@ in
       };
     };
 
+    thunderbolt = {
+      enable = lib.mkEnableOption ''
+        upstream's patched thunderbolt driver (scripts/fedora/install-thunderbolt.sh):
+        the in-tree thunderbolt module rebuilt with patches/runtime/thunderbolt,
+        which shadows the stock one and gives the Titan Ridge and Ice Lake
+        controllers of T2 Macs runtime D3. It replaced the retired
+        `t2thunderbolt` module. Upstream installs it on T2 Macs with a Titan
+        Ridge (8086:15e8/15eb) or Ice Lake (8086:8a0d/8a17) NHI'';
+
+      package = lib.mkOption {
+        type = lib.types.package;
+        default = pkgs.callPackage ../../pkgs/thunderbolt {
+          kernel = config.boot.kernelPackages.kernel;
+        };
+        defaultText = lib.literalExpression "the patched thunderbolt built against config.boot.kernelPackages.kernel";
+        description = "The patched thunderbolt module package (see nix/pkgs/thunderbolt).";
+      };
+    };
+
+    i915 = {
+      enable = lib.mkEnableOption ''
+        upstream's patched Intel graphics drivers (scripts/fedora/install-i915.sh):
+        i915 and drm_display_helper rebuilt with patches/runtime/i915, which
+        shadow the in-tree modules (PSR on Apple panels, restoring the gmux
+        brightness on T2 MacBook Pros). Upstream installs them on MacBooks and
+        iMacs with an Intel GPU at 00:02.0'';
+
+      package = lib.mkOption {
+        type = lib.types.package;
+        default = pkgs.callPackage ../../pkgs/i915 {
+          kernel = config.boot.kernelPackages.kernel;
+        };
+        defaultText = lib.literalExpression "the patched i915 built against config.boot.kernelPackages.kernel";
+        description = "The patched i915 module package (see nix/pkgs/i915).";
+      };
+    };
+
     extraKernelParams = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -306,7 +343,9 @@ in
     boot.extraModulePackages =
       cfg.modulePackages
       ++ lib.optional cfg.gpuRuntimePm.enable cfg.gpuRuntimePm.package
-      ++ lib.optional cfg.wireless.enable cfg.wireless.package;
+      ++ lib.optional cfg.wireless.enable cfg.wireless.package
+      ++ lib.optional cfg.thunderbolt.enable cfg.thunderbolt.package
+      ++ lib.optional cfg.i915.enable cfg.i915.package;
 
     # install-gpu-runtime-pm.sh's kait2en-gpu-runtime-pm.conf: GMUX must
     # provide the power callbacks before AMDGPU probes.

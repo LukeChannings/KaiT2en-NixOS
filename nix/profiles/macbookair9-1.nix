@@ -30,6 +30,11 @@
     # install-wireless.sh: the patched Broadcom drivers on every T2 Mac (all
     # have Broadcom WLAN); they also carry the AWDL interface for t2-drop.
     wireless.enable = true;
+    # install-thunderbolt.sh: the patched thunderbolt driver on T2 Macs with a
+    # Titan Ridge or Ice Lake NHI; this one has an Ice Lake controller.
+    thunderbolt.enable = true;
+    # install-i915.sh: the patched i915 on MacBooks with an Intel GPU.
+    i915.enable = true;
     # Generic installer branch: amdgpu.aspm=1 (harmless without an AMD GPU;
     # upstream adds it on every model but the MacBookPro16,1), pcie_aspm=force
     # + powersave.
