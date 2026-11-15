@@ -1,11 +1,17 @@
 # A complete ALSA UCM2 tree = stock `alsa-ucm-conf` plus the KaiT2en Apple T2
-# use-case profiles (super's `modules/t2bce_audio-alsa-ucm-conf`).
+# use-case profiles (upstream's `modules/apple-t2-alsa-ucm-conf`, named
+# `t2bce_audio-alsa-ucm-conf` before the driver became `snd-apple-t2`).
 #
-# The `t2bce_audio` driver names its card `AppleT2x<N>` where N is the speaker
+# The `snd-apple-t2` driver names its card `AppleT2x<N>` where N is the speaker
 # channel count (x2/x4/x6). ALSA UCM matches that card `driver` string to
 # `conf.d/AppleT2x<N>/AppleT2x<N>.conf`, which pulls in `AppleT2/HiFi-x<N>.conf`
 # — the profile exposing the raw multichannel PCM as the Speaker device the
 # audio DSP graphs then target, alongside Headphones and Mic.
+#
+# Divergence: patches/nixos/apple-t2-alsa-ucm-conf-speaker-direct.patch points
+# Speaker straight at the PCM instead of upstream's identity-map split, so the
+# DSP sink is the only speaker device (with the dsp/ patch; see its header for
+# the drop condition).
 #
 # `ALSA_CONFIG_UCM2` is a single root for every card on the system, not just
 # the T2 one, so the AppleT2 profiles can't ship standalone: this derivation
@@ -26,7 +32,14 @@ stdenvNoCC.mkDerivation {
   # with the wider KaiT2en tree, not independently.
   inherit (alsa-ucm-conf) version;
 
-  src = lib.cleanSource ../../../modules/t2bce_audio-alsa-ucm-conf;
+  src = lib.cleanSource ../../../modules/apple-t2-alsa-ucm-conf;
+
+  patches = [
+    (builtins.path {
+      name = "apple-t2-alsa-ucm-conf-speaker-direct.patch";
+      path = ../../../patches/nixos/apple-t2-alsa-ucm-conf-speaker-direct.patch;
+    })
+  ];
 
   dontConfigure = true;
   dontBuild = true;
@@ -39,7 +52,7 @@ stdenvNoCC.mkDerivation {
     cp -r ${alsa-ucm-conf}/share/alsa/ucm2 "$dst"
     chmod -R u+w "$dst"
 
-    # Overlay the Apple T2 split-channel HiFi profiles (x2/x4/x6).
+    # Overlay the Apple T2 HiFi profiles (x2/x4/x6).
     mkdir -p "$dst/AppleT2"
     cp ucm2/AppleT2/*.conf "$dst/AppleT2/"
 
@@ -53,7 +66,7 @@ stdenvNoCC.mkDerivation {
   '';
 
   meta = {
-    description = "ALSA UCM2 tree with the KaiT2en Apple T2 split-channel profiles";
+    description = "ALSA UCM2 tree with the KaiT2en Apple T2 profiles";
     platforms = lib.platforms.linux;
   };
 }

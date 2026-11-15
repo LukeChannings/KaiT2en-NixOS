@@ -1,12 +1,12 @@
 # NixOS module for the T2 Mac audio: upstream's UCM split + `dsp/` filter chains.
 #
-# `t2bce` (via t2bce_audio) brings up the raw `AppleT2x<N>` sound card. Driving
+# `apple-t2-bridge` (via snd-apple-t2) brings up the raw `AppleT2x<N>` sound card. Driving
 # its speakers directly is unbalanced and unsafe (no crossover, no limiter), so
 # this module installs upstream's host-side audio stack exactly as
 # scripts/fedora/install-alsa-ucm.sh + install-dsp.sh (`make -C dsp install`)
 # do, with the Fedora lifecycle's DMI pick replaced by `model`:
 #
-#   1. ALSA UCM: the AppleT2 use cases (modules/t2bce_audio-alsa-ucm-conf,
+#   1. ALSA UCM: the AppleT2 use cases (modules/apple-t2-alsa-ucm-conf,
 #      packaged with the stock tree as nix/pkgs/t2bce_audio-alsa-ucm-conf)
 #      expose the raw multichannel PCM, the headphone PCM and the mic PCM as
 #      the Speaker / Headphones / Mic devices. NixOS' alsa-lib reads its UCM

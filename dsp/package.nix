@@ -34,6 +34,18 @@ stdenvNoCC.mkDerivation (_finalAttrs: {
 
   src = lib.cleanSource ./.;
 
+  # Deliberate divergence from upstream, kept as a patch so `src` stays
+  # byte-identical to upstream: the DSP sink is the only internal speaker
+  # device. It pairs with the UCM patch in nix/pkgs/t2bce_audio-alsa-ucm-conf;
+  # the header records the drop condition, re-checked every upstream sync.
+  # builtins.path content-addresses the patch by its own bytes.
+  patches = [
+    (builtins.path {
+      name = "t2-dsp-speaker-dsp-only.patch";
+      path = ../patches/nixos/t2-dsp-speaker-dsp-only.patch;
+    })
+  ];
+
   nativeBuildInputs = [ python3 ];
 
   buildPhase = ''

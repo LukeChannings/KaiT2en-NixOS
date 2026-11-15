@@ -1,0 +1,184 @@
+KaiT2en-NixOS divergence: the DSP sink is the only internal speaker device.
+
+Upstream's speaker graphs play into the UCM split-PCM node and leave it
+selectable, so a stream routed there reaches the transducers with no
+crossover and no limiter. With the companion UCM patch
+(apple-t2-alsa-ucm-conf-speaker-direct.patch) the Speaker device is a
+plain hw:${CardId},0 node; this gives that node the name and channel
+layout its graph targets, marks it Audio/Sink/Internal, hides the card's
+"[Out] Speaker" port from desktop sound panels (api.acp.hidden-ports),
+and names the DSP sink after the machine family ("MacBook Pro
+Speakers"). Tests assert that every model's layout and target name match
+its graph. (Originally landed in-tree as fe14b8f and 3811916; moved here
+in the 2026-11-15 sync so dsp/ stays byte-identical to upstream.)
+
+Applied by dsp/package.nix on top of the upstream source (-p1 relative
+to dsp/), together with the UCM patch: either one alone breaks the
+speaker path.
+
+Drop condition: remove (with the UCM patch) when upstream's dsp/ makes
+the DSP sink the only selectable internal speaker device -- the raw
+speaker node hidden from both the sink list and the card's ports.
+Re-check every sync.
+
+diff --git a/tests/test_packaging.py b/tests/test_packaging.py
+index 3ccbe57..f7f9821 100644
+--- a/tests/test_packaging.py
++++ b/tests/test_packaging.py
+@@ -45,7 +45,7 @@ class PackagingTests(unittest.TestCase):
+             self.assertTrue((self.output / "profiles" / profile / "README.md").is_file())
+ 
+     def test_graph_processing_unchanged(self):
+-        for profile in builder.models().values():
++        for product, profile in builder.models().items():
+             for source in (SOURCE / "profiles" / profile).glob("*.json"):
+                 expected = builder.relocate(json.loads(source.read_text()), profile, "/usr/share")
+                 props = "playback.props" if source.name == "graph.json" else "capture.props"
+@@ -53,6 +53,11 @@ class PackagingTests(unittest.TestCase):
+                     if source.name == "graph.json" else builder.mic_name(profile))
+                 if source.name == "graph.json":
+                     expected[props]["node.dont-move"] = True
++                    name = builder.speaker_name(product)
++                    expected["node.description"] = name
++                    expected["media.name"] = name
++                    expected[props]["node.description"] = f"{name} Out"
++                    expected[props]["media.name"] = f"{name} Out"
+                 actual = json.loads((self.output / "profiles" / profile / source.name).read_text())
+                 self.assertEqual(expected, actual)
+                 for asset in (SOURCE / "profiles" / profile).glob("*.wav"):
+@@ -105,6 +110,40 @@ class PackagingTests(unittest.TestCase):
+             "device.profile.name": "HiFi: Headphones: sink",
+         }])
+ 
++    def test_speaker_backend_is_hidden_and_matches_its_graph(self):
++        rules = {rule["matches"][0]["alsa.id"]: rule["actions"]["update-props"]
++                 for rule in self.conf["monitor.alsa.rules"]
++                 if rule["matches"][0].get("device.profile.name") == "HiFi: Speaker: sink"}
++        self.assertEqual(set(rules), {f"t2-{p}" for p in builder.models().values()})
++        for profile in builder.models().values():
++            graph = json.loads((self.output / "profiles" / profile / "graph.json").read_text())
++            props = rules[f"t2-{profile}"]
++            # A layout or name that drifts from the graph would silently route
++            # the crossover's bands to the wrong transducers.
++            self.assertEqual(props["node.name"], graph["playback.props"]["target.object"])
++            self.assertEqual(props["audio.position"], graph["playback.props"]["audio.position"])
++            self.assertIs(props["api.alsa.use-chmap"], False)
++            self.assertEqual(props["media.class"], "Audio/Sink/Internal")
++
++    def test_speaker_dsp_sink_is_the_only_visible_speaker_device(self):
++        for product, profile in builder.models().items():
++            graph = json.loads((self.output / "profiles" / profile / "graph.json").read_text())
++            self.assertEqual(graph["capture.props"]["media.class"], "Audio/Sink")
++            self.assertEqual(graph["node.description"], builder.speaker_name(product))
++
++    def test_raw_speaker_port_is_hidden_from_the_card(self):
++        # Audio/Sink/Internal hides the node from PulseAudio; GNOME lists card
++        # ports, so the UCM Speaker device needs hiding there too.
++        matches = []
++        for rule in self.conf["monitor.alsa.rules"]:
++            ports = rule.get("actions", {}).get("update-props", {}).get("api.acp.hidden-ports")
++            if ports is not None:
++                self.assertEqual(ports, ["[Out] Speaker"])
++                matches.extend(rule["matches"])
++        # Device rules run before WirePlumber adds alsa.id, so this one cannot
++        # be keyed on the card id the way the node rules are.
++        self.assertEqual(matches, [{"api.alsa.card.name": "Apple T2 Audio"}])
++
+     def test_speaker_filter_streams_do_not_pause_on_short_idle_gaps(self):
+         for profile in builder.models().values():
+             graph = json.loads((self.output / "profiles" / profile / "graph.json").read_text())
+diff --git a/tools/build.py b/tools/build.py
+index 68c4100..8712be7 100644
+--- a/tools/build.py
++++ b/tools/build.py
+@@ -17,6 +17,24 @@ def mic_name(profile):
+     return f"alsa_input.t2-{profile}.RawMic"
+ 
+ 
++# The DSP sink is the only speaker device a user sees, so name it after the
++# machine rather than after the profile. Longest family prefix first: every
++# iMacPro product name also starts with iMac.
++FAMILIES = (
++    ("MacBookAir", "MacBook Air"),
++    ("MacBookPro", "MacBook Pro"),
++    ("iMacPro", "iMac Pro"),
++    ("iMac", "iMac"),
++)
++
++
++def speaker_name(product):
++    for prefix, label in FAMILIES:
++        if product.startswith(prefix):
++            return f"{label} Speakers"
++    raise ValueError(f"no speaker name for product: {product}")
++
++
+ def match(profile, stream):
+     return {
+         "alsa.id": f"t2-{profile}",
+@@ -79,10 +97,27 @@ def build(output, datadir):
+                 # clients between the DSP sink and headphones without moving
+                 # this stream away from its raw speaker backend.
+                 graph[props]["node.dont-move"] = True
++                name = speaker_name(product)
++                graph["node.description"] = name
++                graph["media.name"] = name
++                graph[props]["node.description"] = f"{name} Out"
++                graph[props]["media.name"] = f"{name} Out"
+             write_json(dest / filename, graph)
+             if stream == "capture":
+                 monitor.append({"matches": [match(profile, stream)], "actions": {
+                     "update-props": {"node.name": target}}})
++            else:
++                # The UCM Speaker device is the graph's only backend, so give it
++                # the name and channel layout the graph targets, and keep it out
++                # of the user-visible sink list: routing around the DSP would
++                # drive the transducers with no crossover and no limiter.
++                monitor.append({"matches": [match(profile, stream)], "actions": {
++                    "update-props": {
++                        "node.name": target,
++                        "media.class": "Audio/Sink/Internal",
++                        "api.alsa.use-chmap": False,
++                        "audio.position": graph[props]["audio.position"],
++                    }}})
+         modules = []
+         for filename in ("graph.json", "mic.json"):
+             path = dest / filename
+@@ -98,13 +133,25 @@ def build(output, datadir):
+     (output / "89-t2-dsp.rules").write_text("\n".join(udev) + "\n")
+     write_json(output / "models.json", models())
+     # Constrain the raw T2 speakers to the rates the hardware DSP path expects.
+-    # Losing this in the packaging refactor caused startup distortion. No rename
+-    # here, so the WirePlumber-generated names stay intact for UCM loopbacks.
++    # Losing this in the packaging refactor caused startup distortion. Applies
++    # to every T2 playback node, speaker backends included.
+     monitor.append({
+         "matches": [{"alsa.id": "~t2-.*", "api.alsa.pcm.stream": "playback"}],
+         "actions": {"update-props": {
+             "audio.allowed-rates": [96000, 88200, 48000, 44100]}},
+     })
++    # Audio/Sink/Internal keeps the raw speaker node out of the PulseAudio sink
++    # list, but GNOME builds its output list from the card's ports, so the UCM
++    # Speaker device still showed up there as "Internal Speakers" beside the DSP
++    # sink. Hiding the port drops it from EnumRoute/Route only: the device, its
++    # node and the graph's links to it are untouched (spa/plugins/alsa/acp).
++    # Device rules are applied before WirePlumber adds the alsa.* props, so this
++    # has to match on the card name rather than on the udev-assigned alsa.id.
++    monitor.append({
++        "matches": [{"api.alsa.card.name": "Apple T2 Audio"}],
++        "actions": {"update-props": {
++            "api.acp.hidden-ports": ["[Out] Speaker"]}},
++    })
+     # The speaker DSP sink has priority.session=1400.  Keep the headphone
+     # PCM as a separate node, but let it win automatic default selection while
+     # its jack-backed UCM route is available.
+@@ -116,8 +163,7 @@ def build(output, datadir):
+         }],
+         "actions": {"update-props": {"priority.session": 1500}},
+     })
+-    # Strict JSON is accepted as SPA-JSON. Speaker PCM split parents must keep
+-    # their WirePlumber-generated names so UCM loopbacks keep linking correctly.
++    # Strict JSON is accepted as SPA-JSON.
+     write_json(output / "51-t2-dsp.conf", {
+         "monitor.alsa.rules": monitor,
+         "wireplumber.profiles": {"main": {

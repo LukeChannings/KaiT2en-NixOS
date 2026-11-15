@@ -1,0 +1,161 @@
+KaiT2en-NixOS divergence: the AppleT2 Speaker device without the PCM split.
+
+Upstream's HiFi profiles split the speaker PCM with an identity channel
+map. That buys nothing but a second, user-selectable sink: WirePlumber
+builds a loopback whose capture end sits in the output list beside the
+DSP sink and feeds the same hardware node in parallel with the filter
+chain. It cannot be disabled (the DSP's target goes with it) or hidden
+(createSplitPCMLoopback hardcodes Audio/Sink after the monitor rules).
+So Speaker points straight at hw:${CardId},0, and the companion DSP
+patch (t2-dsp-speaker-dsp-only.patch) gives the resulting node the name,
+layout and class its graph expects. The hardware still runs the same
+format, channel count and rate. (Originally landed in-tree as fe14b8f;
+moved here in the 2026-11-15 sync so modules/ stays byte-identical to
+upstream.)
+
+Applied by nix/pkgs/t2bce_audio-alsa-ucm-conf on top of the upstream
+source (-p1 relative to modules/apple-t2-alsa-ucm-conf), together with
+the DSP patch.
+
+Drop condition: remove (with the DSP patch) when upstream's AppleT2
+profiles stop splitting the speaker PCM, or the DSP patch is dropped.
+Re-check every sync.
+
+diff --git a/ucm2/AppleT2/HiFi-x2.conf b/ucm2/AppleT2/HiFi-x2.conf
+index 58c35f9..8ec4288 100644
+--- a/ucm2/AppleT2/HiFi-x2.conf
++++ b/ucm2/AppleT2/HiFi-x2.conf
+@@ -1,15 +1,3 @@
+-Include.pcm_split.File "/common/pcm/split.conf"
+-
+-Macro.playback.SplitPCM {
+-	Name "apple_t2_speakers"
+-	Direction Playback
+-	Format S24_LE
+-	Channels 2
+-	HWChannels 2
+-	HWChannelPos0 FL
+-	HWChannelPos1 FR
+-}
+-
+ SectionVerb {
+ 	Value {
+ 		TQ "HiFi"
+@@ -25,17 +13,8 @@ SectionDevice."Speaker" {
+ 
+ 	Value {
+ 		PlaybackPriority 100
+-	}
+-	Macro.pcm_split.SplitPCMDevice {
+-		Name "apple_t2_speakers"
+-		Direction Playback
+-		Device 0
+-		Channels 2
+-		HWChannels 2
+-		Channel0 0
+-		Channel1 1
+-		ChannelPos0 FL
+-		ChannelPos1 FR
++		PlaybackChannels 2
++		PlaybackPCM "hw:${CardId},0"
+ 	}
+ }
+ 
+diff --git a/ucm2/AppleT2/HiFi-x4.conf b/ucm2/AppleT2/HiFi-x4.conf
+index 64d2134..f8121f9 100644
+--- a/ucm2/AppleT2/HiFi-x4.conf
++++ b/ucm2/AppleT2/HiFi-x4.conf
+@@ -1,17 +1,3 @@
+-Include.pcm_split.File "/common/pcm/split.conf"
+-
+-Macro.playback.SplitPCM {
+-	Name "apple_t2_speakers"
+-	Direction Playback
+-	Format S24_LE
+-	Channels 4
+-	HWChannels 4
+-	HWChannelPos0 FL
+-	HWChannelPos1 FR
+-	HWChannelPos2 RL
+-	HWChannelPos3 RR
+-}
+-
+ SectionVerb {
+ 	Value {
+ 		TQ "HiFi"
+@@ -27,21 +13,8 @@ SectionDevice."Speaker" {
+ 
+ 	Value {
+ 		PlaybackPriority 100
+-	}
+-	Macro.pcm_split.SplitPCMDevice {
+-		Name "apple_t2_speakers"
+-		Direction Playback
+-		Device 0
+-		Channels 4
+-		HWChannels 4
+-		Channel0 0
+-		Channel1 1
+-		Channel2 2
+-		Channel3 3
+-		ChannelPos0 FL
+-		ChannelPos1 FR
+-		ChannelPos2 RL
+-		ChannelPos3 RR
++		PlaybackChannels 4
++		PlaybackPCM "hw:${CardId},0"
+ 	}
+ }
+ 
+diff --git a/ucm2/AppleT2/HiFi-x6.conf b/ucm2/AppleT2/HiFi-x6.conf
+index 118b7c7..94a0c75 100644
+--- a/ucm2/AppleT2/HiFi-x6.conf
++++ b/ucm2/AppleT2/HiFi-x6.conf
+@@ -1,19 +1,3 @@
+-Include.pcm_split.File "/common/pcm/split.conf"
+-
+-Macro.playback.SplitPCM {
+-	Name "apple_t2_speakers"
+-	Direction Playback
+-	Format S24_LE
+-	Channels 6
+-	HWChannels 6
+-	HWChannelPos0 FL
+-	HWChannelPos1 SL
+-	HWChannelPos2 RL
+-	HWChannelPos3 FR
+-	HWChannelPos4 SR
+-	HWChannelPos5 RR
+-}
+-
+ SectionVerb {
+ 	Value {
+ 		TQ "HiFi"
+@@ -29,25 +13,8 @@ SectionDevice."Speaker" {
+ 
+ 	Value {
+ 		PlaybackPriority 100
+-	}
+-	Macro.pcm_split.SplitPCMDevice {
+-		Name "apple_t2_speakers"
+-		Direction Playback
+-		Device 0
+-		Channels 6
+-		HWChannels 6
+-		Channel0 0
+-		Channel1 1
+-		Channel2 2
+-		Channel3 3
+-		Channel4 4
+-		Channel5 5
+-		ChannelPos0 FL
+-		ChannelPos1 SL
+-		ChannelPos2 RL
+-		ChannelPos3 FR
+-		ChannelPos4 SR
+-		ChannelPos5 RR
++		PlaybackChannels 6
++		PlaybackPCM "hw:${CardId},0"
+ 	}
+ }
+ 
