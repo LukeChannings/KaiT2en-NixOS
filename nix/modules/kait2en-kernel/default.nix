@@ -247,7 +247,7 @@ in
         shadows the in-tree module and is soft-dependent on t2gmux. Upstream
         installs it on the MacBookPro15,1 / 16,1 / 16,4 (GMUX runtime PM, so
         the dGPU reaches D3cold under t2-hybrid-gpu-control) and the
-        iMac20,1 / 20,2 (5K panel)'';
+        iMac20,1 / 20,2 and iMacPro1,1 (5K panel)'';
 
       package = lib.mkOption {
         type = lib.types.package;

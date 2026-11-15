@@ -3,17 +3,17 @@
 #
 # Upstream rebuilds *only* the amdgpu module from the running kernel's source
 # with patches/runtime/gpu-runtime-pm/series applied (GMUX runtime PM so the
-# dGPU reaches D3cold under t2-hybrid-gpu-control, 5K iMac panel support, and
-# the Navi 14/Navi power-limit quirks), builds it with `M=` against the
+# dGPU reaches D3cold under t2-hybrid-gpu-control, 5K iMac and iMac Pro panel
+# support, and the Navi 14/Navi power-limit quirks), builds it with `M=` against the
 # kernel's build tree and installs it under `updates/kait2en-gpu-runtime-pm`,
 # where depmod's default `search updates built-in` lets it shadow the in-tree
 # amdgpu. We do the same, so the hybrid profiles do not need a second full
 # kernel build: the module is built against `kernel.dev` from `kernel.src`.
 #
-# Patch handling mirrors the script: entries are read from `series`;
-# `patch_needed_for_kernel` skips 0001 (merged in 7.3, backported to 7.2.10+);
-# each remaining patch is applied with `--forward --fuzz=3`, and one that
-# already reverse-applies is treated as present. `amdgpu_trace.h`'s
+# Patch handling mirrors the script: entries are read from `series`; each is
+# applied with `--forward --fuzz=3`, and one that already reverse-applies is
+# treated as present. (The script's `patch_needed_for_kernel` skip list went
+# with the VI reset patch, which is in the kernel since 7.2.10.) `amdgpu_trace.h`'s
 # TRACE_INCLUDE_PATH is pointed at `.` as the script does, which the `M=`
 # build needs.
 #
@@ -40,15 +40,7 @@ let
     lib.splitString "\n" (builtins.readFile (patchDir + "/series"))
   );
 
-  # install-gpu-runtime-pm.sh `patch_needed_for_kernel`.
-  patchNeeded =
-    name:
-    !(
-      name == "0001-drm-amdgpu-reset-VI-ASIC-on-MacBookPro15-1.patch"
-      && lib.versionAtLeast kernel.version "7.2.10"
-    );
-
-  patches = map (name: "${patchDir}/${name}") (lib.filter patchNeeded series);
+  patches = map (name: "${patchDir}/${name}") series;
 
   inherit (kernel) modDirVersion;
   kernelBuildDir = "${kernel.dev}/lib/modules/${modDirVersion}/build";
