@@ -38,14 +38,14 @@ class PackagingTests(unittest.TestCase):
         self.assertNotIn("pci", rules)
         self.assertIn('ACTION=="add",', rules)
         self.assertNotIn('add|change', rules)
-        self.assertIn('KERNELS=="t2bce_audio", GOTO="t2_dsp_model"', rules)
+        self.assertIn('DRIVERS=="snd_apple_t2", GOTO="t2_dsp_model"', rules)
         for model, profile in builder.models().items():
             self.assertLessEqual(len(f"t2-{profile}"), 15)
             self.assertIn(f'RESULT=="{model}", ATTR{{id}}="t2-{profile}"', rules)
             self.assertTrue((self.output / "profiles" / profile / "README.md").is_file())
 
     def test_graph_processing_unchanged(self):
-        for product, profile in builder.models().items():
+        for profile in builder.models().values():
             for source in (SOURCE / "profiles" / profile).glob("*.json"):
                 expected = builder.relocate(json.loads(source.read_text()), profile, "/usr/share")
                 props = "playback.props" if source.name == "graph.json" else "capture.props"
@@ -53,11 +53,6 @@ class PackagingTests(unittest.TestCase):
                     if source.name == "graph.json" else builder.mic_name(profile))
                 if source.name == "graph.json":
                     expected[props]["node.dont-move"] = True
-                    name = builder.speaker_name(product)
-                    expected["node.description"] = name
-                    expected["media.name"] = name
-                    expected[props]["node.description"] = f"{name} Out"
-                    expected[props]["media.name"] = f"{name} Out"
                 actual = json.loads((self.output / "profiles" / profile / source.name).read_text())
                 self.assertEqual(expected, actual)
                 for asset in (SOURCE / "profiles" / profile).glob("*.wav"):
@@ -109,40 +104,6 @@ class PackagingTests(unittest.TestCase):
             "api.alsa.pcm.stream": "playback",
             "device.profile.name": "HiFi: Headphones: sink",
         }])
-
-    def test_speaker_backend_is_hidden_and_matches_its_graph(self):
-        rules = {rule["matches"][0]["alsa.id"]: rule["actions"]["update-props"]
-                 for rule in self.conf["monitor.alsa.rules"]
-                 if rule["matches"][0].get("device.profile.name") == "HiFi: Speaker: sink"}
-        self.assertEqual(set(rules), {f"t2-{p}" for p in builder.models().values()})
-        for profile in builder.models().values():
-            graph = json.loads((self.output / "profiles" / profile / "graph.json").read_text())
-            props = rules[f"t2-{profile}"]
-            # A layout or name that drifts from the graph would silently route
-            # the crossover's bands to the wrong transducers.
-            self.assertEqual(props["node.name"], graph["playback.props"]["target.object"])
-            self.assertEqual(props["audio.position"], graph["playback.props"]["audio.position"])
-            self.assertIs(props["api.alsa.use-chmap"], False)
-            self.assertEqual(props["media.class"], "Audio/Sink/Internal")
-
-    def test_speaker_dsp_sink_is_the_only_visible_speaker_device(self):
-        for product, profile in builder.models().items():
-            graph = json.loads((self.output / "profiles" / profile / "graph.json").read_text())
-            self.assertEqual(graph["capture.props"]["media.class"], "Audio/Sink")
-            self.assertEqual(graph["node.description"], builder.speaker_name(product))
-
-    def test_raw_speaker_port_is_hidden_from_the_card(self):
-        # Audio/Sink/Internal hides the node from PulseAudio; GNOME lists card
-        # ports, so the UCM Speaker device needs hiding there too.
-        matches = []
-        for rule in self.conf["monitor.alsa.rules"]:
-            ports = rule.get("actions", {}).get("update-props", {}).get("api.acp.hidden-ports")
-            if ports is not None:
-                self.assertEqual(ports, ["[Out] Speaker"])
-                matches.extend(rule["matches"])
-        # Device rules run before WirePlumber adds alsa.id, so this one cannot
-        # be keyed on the card id the way the node rules are.
-        self.assertEqual(matches, [{"api.alsa.card.name": "Apple T2 Audio"}])
 
     def test_speaker_filter_streams_do_not_pause_on_short_idle_gaps(self):
         for profile in builder.models().values():

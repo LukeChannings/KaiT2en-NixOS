@@ -1,0 +1,29 @@
+From: Andre Eikmeyer <dev@deq.rocks>
+Subject: [PATCH] drm/amd/display: support the 5K panel of the iMacPro1,1
+
+The iMacPro1,1 drives its 5K panel like the iMac20,x, as two 2560x2880
+tiles on an eDP root link and a DP tile link. Add it to the 5K quirk.
+
+Signed-off-by: Andre Eikmeyer <dev@deq.rocks>
+---
+  drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_quirks.c | 7 +++++++
+  1 file changed, 7 insertions(+)
+
+diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_quirks.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_quirks.c
+index 8657dd9..a34a455 100644
+--- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_quirks.c
++++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_quirks.c
+@@ -173,6 +173,13 @@ static const struct dmi_system_id dmi_quirk_table[] = {
+ 			DMI_MATCH(DMI_PRODUCT_NAME, "iMac20,2"),
+ 		},
+ 	},
++	{
++		.callback = imac5K_support_callback,
++		.matches = {
++			DMI_MATCH(DMI_SYS_VENDOR, "Apple Inc."),
++			DMI_MATCH(DMI_PRODUCT_NAME, "iMacPro1,1"),
++		},
++	},
+ 	{}
+ 	/* TODO: refactor this from a fixed table to a dynamic option */
+ };

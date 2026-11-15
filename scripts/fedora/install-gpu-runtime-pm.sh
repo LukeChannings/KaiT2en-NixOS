@@ -54,7 +54,7 @@ is_supported_model() {
 	case "$model" in
 		MacBookPro15,1|MacBookPro16,1|MacBookPro16,4) return 0 ;;
 		# No hybrid graphics, but their 5K panel needs the same patched AMDGPU.
-		iMac20,1|iMac20,2) return 0 ;;
+		iMac20,1|iMac20,2|iMacPro1,1) return 0 ;;
 		*) return 1 ;;
 	esac
 }
@@ -121,21 +121,6 @@ HOOK
 	chmod 0755 "$KERNEL_INSTALL_HOOK"
 }
 
-patch_needed_for_kernel() {
-	local patch_file=$1 kver=$2
-	local patch_name=${patch_file##*/}
-
-	case "$patch_name" in
-		0001-drm-amdgpu-reset-VI-ASIC-on-MacBookPro15-1.patch)
-			# Merged upstream in 7.3 and backported to stable 7.2.10+
-			if kernel_version_ge "$kver" 7 2 10; then
-				return 1
-			fi
-			;;
-	esac
-	return 0
-}
-
 case "$ACTION" in
 	remove)
 		require_command dracut rm
@@ -153,6 +138,9 @@ if ! is_supported_model; then
 fi
 
 load_patch_series
+# Refresh the hook copy before the build, so a failed build for the running
+# kernel cannot leave an outdated hook behind for the next kernel.
+((FROM_REPO == 0)) || install_kernel_hook
 
 info "installing build dependencies for $KVER"
 build_tree=$(readlink -f "/lib/modules/$KVER/build" || true)
@@ -207,10 +195,6 @@ else
 fi
 
 for patch_file in "${PATCH_FILES[@]}"; do
-	if ! patch_needed_for_kernel "$patch_file" "$KVER"; then
-		info "skipping ${patch_file##*/} (already present in kernel $KVER)"
-		continue
-	fi
 	apply_patch_if_needed "$kernel_tree" "$patch_file"
 done
 
@@ -248,8 +232,6 @@ depmod -a "$KVER"
 if ((DEFER_INITRAMFS == 0)); then
 	dracut --force "/boot/initramfs-$KVER.img" "$KVER"
 fi
-
-((FROM_REPO == 0)) || install_kernel_hook
 
 info "GPU runtime PM modules installed for $KVER"
 info "reboot into $KVER, then verify with: modinfo -n amdgpu"

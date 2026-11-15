@@ -62,11 +62,11 @@ kernel updates. `modinfo -n <module>` prints the installed kernel object path.
 
 | DKMS source | Installed module | Purpose |
 | --- | --- | --- |
-| `t2bce_stack` | `t2bce_dma` | Shared DMA queue engine for T2 BCE clients |
-| `t2bce_stack` | `t2bce_core` | T2 bridge PCI device, mailbox, power management and transport |
-| `t2bce_stack` | `t2bce_vhci` | Virtual USB host for internal T2 input devices |
-| `t2bce_stack` | `t2bce_audio` | Apple T2 audio driver |
-| `t2bce_stack` | `t2bce_ave` | Apple T2 AVE HEVC encoder |
+| `apple-t2-bridge` | `apple-t2-bridge` | T2 Bridge Controller: DMA queues, mailbox and power management |
+| `apple-t2-bridge` | `apple-t2-vhci-hcd` | Virtual USB host for internal T2 input devices |
+| `apple-t2-bridge` | `snd-apple-t2` | Apple T2 audio driver |
+| `apple-t2-bridge` | `t2-ave` | Apple T2 AVE HEVC encoder |
+| `apple-t2-bridge` | `t2-sidecar` | Sidecar video encoder over the T2 NCM link |
 | `t2smc` | `t2smc` | Fan, temperature, charge-limit, RTC and SMC power limit access through hwmon |
 | `t2bdrm` | `t2bdrm` | Touch Bar DRM display device |
 | `t2touchbar` | `t2hid`, `t2touchbar_bl`, `t2touchbar_kbd` | Internal HID quirks, Touch Bar backlight and keyboard mode |
@@ -75,7 +75,6 @@ kernel updates. `modinfo -n <module>` prints the installed kernel object path.
 | `t2_trackpad_actuator` | `t2_trackpad_actuator` | T2 Force Touch actuator transport |
 | `t2mfi_fastcharge` | `t2mfi_fastcharge` | Fast-charge control for Apple MFi devices |
 | `t2gmux` | `t2gmux` | GMUX handling on dual-GPU Macs |
-| `t2thunderbolt` | `t2thunderbolt` | Thunderbolt power-management ordering and T2 PCI quirks |
 | `t2smp` | `t2smp` | Defers secondary CPU hotplug to avoid firmware-sensitive resume delays |
 | `t2sbs` | `t2sbs` | Smart Battery driver that refreshes the full charge capacity and reports the charge relative to it, replaces `sbs` |
 | `linux-apfs-rw` | `apfs` | Read-only access to the macOS APFS container, vendored from upstream |
@@ -110,7 +109,42 @@ sudo /usr/local/libexec/kait2en/gpu-runtime-pm/install-gpu-runtime-pm.sh install
 
 Running the installer again refreshes the copy with the current patches.
 
-The patched AMDGPU and wireless modules are built from the Fedora kernel
+On every MacBook and iMac with an Intel GPU, the installer also builds patched
+i915 and DRM display helper modules. They enable PSR on Apple panels and, on
+dual GPU T2 MacBook Pros, restore the panel brightness after the panel powers on:
+
+```text
+/usr/lib/modules/<kernel>/updates/kait2en-i915/i915.ko.xz
+/usr/lib/modules/<kernel>/updates/kait2en-i915/drm_display_helper.ko.xz
+```
+
+They are built the same way as the AMDGPU module. The build script and patches
+live in `/usr/local/libexec/kait2en/i915/`, the hook is
+`/etc/kernel/install.d/47-kait2en-i915.install` and logs to
+`/var/log/kait2en-i915.log`. To rebuild for a specific kernel by hand:
+
+```bash
+sudo /usr/local/libexec/kait2en/i915/install-i915.sh install <kernel>
+```
+
+On T2 Macs with a Titan Ridge or Ice Lake Thunderbolt controller, the
+installer builds a patched thunderbolt module. On Titan Ridge it turns the
+idle controller off and back on through the same ACPI sequence as macOS,
+which lets the package reach the deep idle states.
+
+```text
+/usr/lib/modules/<kernel>/updates/kait2en-thunderbolt/thunderbolt.ko.xz
+```
+
+The build script and patches live in `/usr/local/libexec/kait2en/thunderbolt/`,
+the hook is `/etc/kernel/install.d/47-kait2en-thunderbolt.install` and logs to
+`/var/log/kait2en-thunderbolt.log`. To rebuild for a specific kernel by hand:
+
+```bash
+sudo /usr/local/libexec/kait2en/thunderbolt/install-thunderbolt.sh install <kernel>
+```
+
+The patched AMDGPU, i915, thunderbolt and wireless modules are built from the Fedora kernel
 source, which is downloaded once per kernel and kept unpacked at:
 
 ```text
@@ -160,13 +194,12 @@ KAIT2EN adds these arguments to every installed kernel through `grubby`:
 
 ```text
 amdgpu.aspm=1
+i915.enable_guc=2
 intel_iommu=on
 iommu=pt
-pm_async=off
-brcmfmac.p2pon=0
 pcie_aspm=force
 pcie_aspm.policy=powersave
-pcie_ports=compat
+pci=noaer
 mem_sleep_default=deep
 initcall_blacklist=cmos_init,magicmouse_driver_init
 module_blacklist=acpi_tad,applesmc,macsmc,hid_apple,hid_appletb_bl,hid_appletb_kbd,hid_magicmouse,appletbdrm,apple_bce,apple_mfi_fastcharge,apple_gmux,sbs
@@ -174,6 +207,10 @@ module_blacklist=acpi_tad,applesmc,macsmc,hid_apple,hid_appletb_bl,hid_appletb_k
 
 On iMacs and the iMac Pro, `pcie_aspm=force` is left out, because their
 Ethernet controllers do not work with forced ASPM.
+
+`pcie_ports=compat` is no longer set and is removed from existing installs.
+The PCIe port services stay on, so hotplug and PCIe tunnels over Thunderbolt
+work and the Thunderbolt root ports can enter D3 at runtime.
 
 On every T2 Mac, the installer enables HuC firmware loading for the Intel GPU:
 
@@ -188,7 +225,8 @@ KAIT2EN does not install a custom kernel or a separate GRUB configuration file.
 
 ## Audio configuration
 
-The ALSA UCM profiles define the T2 speaker, microphone and headset paths:
+`install-alsa-ucm.sh` installs the ALSA UCM profiles for the T2 speaker,
+microphone and headset paths from `modules/apple-t2-alsa-ucm-conf/ucm2/`:
 
 ```text
 /usr/share/alsa/ucm2/AppleT2/HiFi-x2.conf
@@ -199,40 +237,53 @@ The ALSA UCM profiles define the T2 speaker, microphone and headset paths:
 /usr/share/alsa/ucm2/conf.d/AppleT2x6/AppleT2x6.conf
 ```
 
-The installer and the independent `t2-dsp` package deploy all model-specific
-graphs and FIR data. udev and WirePlumber select the matching profile at runtime.
+It also backs up and resets the stored WirePlumber profile, node and route
+defaults of the T2 card in `~/.local/state/wireplumber/`, with backups named
+`*.kait2en.bak`.
+
+The `t2-dsp` package and `install-dsp.sh` install all DSP profiles and the
+runtime integration:
 
 ```text
 /usr/share/t2-dsp/profiles/<profile>/
+/usr/share/t2-dsp/pipewire/<profile>.conf
+/usr/share/t2-dsp/models.json
 /usr/share/wireplumber/wireplumber.conf.d/51-t2-dsp.conf
 /usr/share/wireplumber/scripts/t2-default-output.lua
-/usr/share/pipewire/pipewire.conf.d/50-kait2en-quantum.conf
 /usr/lib/udev/rules.d/89-t2-dsp.rules
 /usr/libexec/t2-dsp/package-actions
+/usr/libexec/t2-dsp/lifecycle.py
 /usr/share/licenses/t2-dsp/
 ```
 
-Unlisted models receive no DSP graph at runtime. Former generated `/etc`
-fragments are backed up under `/var/lib/kait2en/migration/t2-dsp/` with ownership
-receipts under `/var/lib/kait2en/ownership/`. Removal cleans verified backups.
-Migration errors
-are collected in `/var/log/t2-dsp-install.log` and the installer summary.
-See [Audio DSP](../post-install/audio-dsp.md) for the supported-model table,
-audio behavior and diagnostics.
+The package scripts and `install-dsp.sh` generate these files during
+installation:
+
+```text
+/etc/pipewire/pipewire.conf.d/51-t2-dsp.conf
+/var/lib/kait2en/ownership/t2-dsp.json
+/var/lib/kait2en/migration/t2-dsp/
+/var/log/t2-dsp-install.log
+```
+
+`51-t2-dsp.conf` is a copy of `/usr/share/t2-dsp/pipewire/<profile>.conf`,
+selected from the DMI product name. `migration/t2-dsp/` holds backups of
+retired files from earlier installs. See [Audio DSP](../post-install/audio-dsp.md)
+for the supported-model table, audio behavior and diagnostics.
 
 ## System configuration and services
 
 | Path | Purpose |
 | --- | --- |
 | `/etc/systemd/system/kait2en-suspend.service` | Calls the suspend helper before `sleep.target` and again after resume |
-| `/usr/local/libexec/kait2en/kait2en-suspend.sh` | Handles the BCM4377 suspend workaround described below |
+| `/usr/local/libexec/kait2en/kait2en-suspend.sh` | Handles the BCM4350 suspend workaround described below |
 | `/etc/systemd/system/kait2en-macos-mount.service` | Mounts the readable macOS volumes read-only under `/media/macOS` at boot |
 | `/usr/local/libexec/kait2en/kait2en-macos-mount` | Finds the readable volumes in the internal APFS container and mounts them as subdirectories by role |
 | `/etc/udev/rules.d/90-kait2en-macos.rules` | Hides the internal APFS partition from file managers, the volumes are reached through `/media/macOS` |
 | `/etc/systemd/system/t2-services-suspend.service` | Runs feature sleep/resume hooks around sleep |
 | `/usr/local/libexec/t2-services/t2-ncm-sleep` | Runs installed feature hooks before sleep and after resume |
 | `/usr/local/libexec/t2-services/sleep.d/t2-ave` | Closes/reopens sessions only when the AVE daemon is running |
-| `/etc/systemd/system/kait2en-t2-remote.service` | Loads `t2bce_ave` and runs `t2remote`, which holds the bridgeOS services Linux uses, currently `com.apple.aveservice` for the video encoder |
+| `/etc/systemd/system/kait2en-t2-remote.service` | Loads `t2-ave` and runs `t2remote`, which holds the bridgeOS services Linux uses, currently `com.apple.aveservice` for the video encoder |
 | `/usr/local/bin/t2remote` | RemoteXPC service manager; `t2remote status` shows the live services. Listens on `/run/t2remote.sock` |
 | `/etc/NetworkManager/conf.d/10-t2-services.conf` | Keeps NetworkManager away from the internal CDC-NCM interface to the T2, so it stays up until the suspend hooks have closed their T2 sessions. Replaces the former `Apple T2 Bridge` profile |
 | `/usr/local/lib/udev/rules.d/90-t2-services-ncm.rules` | Brings the internal CDC-NCM interface up with an IPv6 link-local address |
@@ -247,15 +298,15 @@ audio behavior and diagnostics.
 | `/boot/initramfs-<running-kernel>.img` | Rebuilt by Dracut after modules and ACPI handling are complete |
 
 `kait2en-suspend.service` is enabled on every installation. Before suspend, it
-checks for a Broadcom PCI device with vendor ID `0x14e4` and device ID `0x5f69`,
-`0x5f71`, `0x5f72` or `0x5fa0`. If one is present, it unloads `brcmfmac_wcc`,
-  `brcmfmac` and `hci_bcm4377` in that order. After resume it loads `brcmfmac`
-  and `brcmfmac_wcc`, waits five seconds, then loads `hci_bcm4377`.
+checks for the BCM4350 WLAN chip of the MacBookPro14,1 (vendor ID `0x14e4`,
+device ID `0x43a3`). If it is present, it unloads `brcmfmac_wcc` and `brcmfmac`,
+and after resume it loads them again.
 
-Without a BCM4377, it checks for the BCM4350 WLAN chip (device ID `0x43a3`).
+The BCM4377 needs no unload. Its WLAN and Bluetooth drivers load the firmware
+again after S3 themselves.
 
-If neither controller is present, the service logs that the fix is not needed
-and does not unload a module. State files for modules successfully unloaded by
+Without a BCM4350, the service logs that the fix is not needed and does not
+unload a module. State files for modules successfully unloaded by
 the helper exist only until resume below `/run/kait2en-suspend/`.
 
 The installer checks the running kernel log for two known Apple ACPI firmware
@@ -323,9 +374,10 @@ outcome of the Bluetooth step is recorded in the installed system at:
 
 `t2-fan-control`, `t2-smc-control`, `t2-power-explorer`, `t2-debug`, `t2-airshare`,
 `t2-drop`, `t2-zone-power`, `t2-journal`, `t2-kbd-backlight`, `kait2en-touchbar`, `kernel-builder`,
-`t2-power-tune` and `kait2en-update` are installed system-wide under `/usr/local`. `kait2en-touchbar` and
-`t2-autobrightness` are optional and only installed when selected at the start
-of the installation.
+`t2-power-tune`, `t2-truetone` and `kait2en-update` are installed system-wide under `/usr/local`. `kait2en-touchbar`
+is optional and only installed when selected at the start of the installation.
+`t2-truetone` is installed with GNOME on the T2 MacBooks, the iMac20,1 and
+the iMac Pro.
 
 MacBookPro15,1, MacBookPro16,1 and MacBookPro16,4 get
 `t2-hybrid-gpu-control`; other MacBook Pro models with Intel and AMD display
@@ -350,7 +402,7 @@ All KAIT2EN desktop applications use the shared header wordmark at
 | T2 Drop, the AirDrop service of T2 AirShare | `/usr/local/bin/t2drop`, `/usr/local/lib/systemd/system/t2-drop.service` (started by D-Bus activation), `/usr/share/dbus-1/system.d/org.t2drop.conf`, `/usr/local/share/dbus-1/system-services/org.t2drop.service` |
 | T2 Keyboard Backlight | `/usr/local/bin/t2-kbd-backlight`, `/usr/local/lib/systemd/system/t2-kbd-backlight.service`, `/etc/kait2en/kbd-backlight.toml`. MacBooks only |
 | T2 Touch Bar | `/usr/local/bin/kait2en-touchbar`, `/usr/local/lib/systemd/user/kait2en-touchbar.service`, `/usr/local/lib/systemd/system/kait2en-touchbar-attach.service`, `/usr/local/lib/udev/rules.d/99-zz-kait2en-touchbar.rules`, `/etc/kait2en/touchbar.toml`, `/usr/local/share/licenses/kait2en-touchbar/THIRD-PARTY-NOTICES.md` |
-| Automatic brightness | `/usr/local/bin/t2-autobrightness`, `/usr/local/lib/systemd/user/kait2en-t2-autobrightness.service` (enabled with `--global`), `/usr/local/share/gnome-shell/extensions/kait2en-autobrightness@kait2en/`, per user `~/.local/state/t2-autobrightness/curve` and, while it runs, `~/.local/state/t2-autobrightness/gnome-settings` |
+| T2 TrueTone | `/usr/local/bin/t2-truetone`, `/usr/local/bin/t2truetone`, `/usr/local/share/applications/org.t2truetone.gtk.desktop`, `/usr/local/share/icons/hicolor/scalable/apps/org.t2truetone.gtk.svg`, `/usr/local/lib/systemd/user/t2-truetone.service` (enabled per user by the app), `/usr/local/lib/udev/rules.d/70-t2-truetone.rules`, `/usr/local/share/gnome-shell/extensions/kait2en-autobrightness@kait2en/`, per user `~/.config/t2-truetone/config.toml`, `~/.local/state/t2-truetone/base-lut`, `~/.local/state/t2-truetone/brightness/curve` and, while the GNOME features are off, `~/.local/state/t2-truetone/saved-night-light-enabled` and `~/.local/state/t2-truetone/brightness/gnome-settings` |
 | T2 Hybrid GPU Control | `/usr/local/bin/t2-hybrid-gpu-control`, `/usr/local/libexec/t2-hybrid-gpu-control-helper`, `/usr/local/libexec/t2-hybrid-gpu-control-status`, `/usr/local/share/applications/org.t2hybridgpucontrol.gtk.desktop`, `/usr/local/share/icons/hicolor/scalable/apps/org.t2hybridgpucontrol.gtk.svg`, `/usr/share/polkit-1/actions/org.t2hybridgpucontrol.gtk.policy`, `/usr/share/polkit-1/actions/org.t2hybridgpucontrol.gtk.status.policy`, `/etc/environment.d/90-kait2en-gsk-renderer.conf`, `/boot/efi/EFI/kait2en/t2-gpu-preboot.efi`, the UEFI boot entry `KaiT2en GPU`, the EFI variable `boot-gpu-cf9aa22b-9505-4c88-aed0-5673e31b00c2` and the build package `rust-std-static-x86_64-unknown-uefi` |
 | T2 GPU Control | `/usr/local/bin/t2-dgpu-control`, `/usr/local/libexec/t2-dgpu-control-helper`, `/usr/local/libexec/t2-dgpu-control-status`, `/usr/local/share/applications/org.t2dgpucontrol.gtk.desktop`, `/usr/local/share/icons/hicolor/scalable/apps/org.t2dgpucontrol.gtk.svg`, `/usr/local/lib/systemd/system/kait2en-dgpu-off.service`, `/usr/local/lib/systemd/system/kait2en-dgpu-suspend.service`, `/usr/local/lib/systemd/system/kait2en-amdgpu-profile.service`, `/usr/local/lib/systemd/system/kait2en-amdgpu-profile-resume.service`, `/usr/share/polkit-1/actions/org.t2dgpucontrol.gtk.policy`, `/usr/share/polkit-1/actions/org.t2dgpucontrol.gtk.status.policy` |
 
@@ -359,8 +411,9 @@ boot and resume. `t2-drop.service` is not enabled. D-Bus starts it when
 T2 AirShare receives or sends over AirDrop, it runs as root because AWDL needs
 CAP_NET_ADMIN, stays while T2 AirShare is visible and exits a minute after
 the last caller. T2 Hybrid GPU Control does not install system services.
-Enabling hybrid graphics puts its `KaiT2en GPU` boot entry first in
-`BootOrder`, ahead of Fedora's shim entry. Uninstalling the app removes the
+Enabling hybrid graphics creates its `KaiT2en GPU` boot entry first in
+`BootOrder`, ahead of Fedora's shim entry. An existing entry keeps its
+position. Uninstalling the app removes the
 entry, the EFI image and the variable.
 T2 GPU Control enables its units only when the corresponding options are
 applied in the app. Both privileged helpers validate the GPU layout and accept

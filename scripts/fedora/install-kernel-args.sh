@@ -42,17 +42,23 @@ repair_empty_grub_cmdline() {
 	info "restored GRUB_CMDLINE_LINUX from the installed kernel command line"
 }
 
-REMOVE_ARGS=()
+# Arguments older installs set that current ones leave out. With the runtime
+# wireless patches the BCM4377 and BCM4364 pass S3 with asynchronous suspend
+# and resume. The Thunderbolt runtime PM needs the PCIe port services, so
+# pcie_ports=compat goes as well.
+REMOVE_ARGS=(
+	"pm_async=off"
+	"brcmfmac.p2pon=0"
+	"pcie_ports=compat"
+)
 
 ADD_ARGS=(
 	"amdgpu.aspm=1"
 	"i915.enable_guc=2"
 	"intel_iommu=on"
 	"iommu=pt"
-	"pm_async=off"
 	"pcie_aspm=force"
 	"pcie_aspm.policy=powersave"
-	"pcie_ports=compat"
 	"pci=noaer"
 	"mem_sleep_default=deep"
 )
@@ -69,6 +75,18 @@ if [[ "$model" == iMac* ]]; then
 	done
 	ADD_ARGS=("${kept_args[@]}")
 	info "not forcing PCIe ASPM on $model"
+fi
+
+# Without pcie_ports=compat the iMacPro1,1 hangs in the SMP bring up on
+# resume from S3.
+if [[ "$model" == iMacPro1,1 ]]; then
+	kept_args=()
+	for arg in "${REMOVE_ARGS[@]}"; do
+		[[ "$arg" == pcie_ports=compat ]] || kept_args+=("$arg")
+	done
+	REMOVE_ARGS=("${kept_args[@]}")
+	ADD_ARGS+=("pcie_ports=compat")
+	info "using pcie_ports=compat on $model"
 fi
 
 INITCALL_BLACKLIST="initcall_blacklist=cmos_init,magicmouse_driver_init"

@@ -26,6 +26,15 @@ pub const TOUCH_BAR: Part = Part {
     privileged: true,
 };
 
+pub const GDM_BRANDING: Part = Part {
+    name: "install-gdm-branding.sh",
+    title: "KaiT2en login screen",
+    description: "Black GDM login screen with the KaiT2en logo. Without it, the login screen \
+                  keeps the Fedora look.",
+    marker: "/etc/dconf/db/gdm.d/00-kait2en",
+    privileged: true,
+};
+
 pub const VORNEHM: Part = Part {
     name: "install-vornehm.sh",
     title: "KaiT2en Vornehm",
@@ -35,29 +44,10 @@ pub const VORNEHM: Part = Part {
     privileged: false,
 };
 
-pub const AUTOBRIGHTNESS: Part = Part {
-    name: "install-autobrightness.sh",
-    title: "Automatic brightness",
-    description: "Follows the ambient light the way macOS does and learns from your own \
-                  changes. GNOME's own automatic brightness and idle dimming stay off while \
-                  it is installed.",
-    marker: "/usr/local/bin/t2-autobrightness",
-    privileged: true,
-};
-
 fn has_touch_bar() -> bool {
     std::fs::read_to_string("/sys/class/dmi/id/product_name").is_ok_and(|model| {
         let model = model.trim();
         model.starts_with("MacBookPro15,") || model.starts_with("MacBookPro16,")
-    })
-}
-
-/// Same models as has_ambient_light_sensor in the installer.
-fn has_ambient_light_sensor() -> bool {
-    std::fs::read_to_string("/sys/class/dmi/id/product_name").is_ok_and(|model| {
-        ["MacBookPro15,", "MacBookPro16,", "MacBookAir8,", "MacBookAir9,"]
-            .iter()
-            .any(|prefix| model.trim().starts_with(prefix))
     })
 }
 
@@ -67,10 +57,10 @@ pub fn available() -> Vec<&'static Part> {
     if has_touch_bar() {
         parts.push(&TOUCH_BAR);
     }
-    let gnome = glib::find_program_in_path("gnome-shell").is_some();
-    if has_ambient_light_sensor() && gnome {
-        parts.push(&AUTOBRIGHTNESS);
+    if Path::new("/etc/dconf/db/gdm.d").is_dir() {
+        parts.push(&GDM_BRANDING);
     }
+    let gnome = glib::find_program_in_path("gnome-shell").is_some();
     if gnome {
         parts.push(&VORNEHM);
     }

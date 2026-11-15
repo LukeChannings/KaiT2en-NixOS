@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Driver for Apple T2 MacBook internal trackpads, reverse engineered
- * from Tahoe/BridgeOS as 1:1 as possible. Aiming for precise pointer
+ * Driver for Apple T2 MacBook internal trackpads, matching the
+ * behaviour of macOS as closely as possible. Aiming for precise pointer
  * behaviour as known from MacOS. We bought a Bentley, not Ford, right?
  *
  *
  * Implemented: T2 reports, firmware geometry, path IDs, scalar Z proximity,
- * Force Touch/Click, and the strongest-path hysteretic force filter.
+ * Force Touch/Click, the strongest-path hysteretic force filter, and palm
+ * rejection from the firmware's own contact identity and touch state.
  *
- * Remaining: parts of contactZShape, diving-button, and resting-hand paths.
- * The latter is clearly libinput territory.
+ * Remaining: parts of the contact shape term, the button zone term, and
+ * resting-thumb and resting-hand refinements on top of palm rejection.
  *
  * Althouth I did not use any of their code, let's credit T2Linux for their
  * pioneer work, which gave us a reliable upstream driver in the last years.
@@ -76,24 +77,42 @@ static void t2_trackpad_fire_actuator(struct hid_device *hdev, u8 waveform_id, u
  * contact settling.
  */
 #define T2_CONTACT_PATH_ID_MASK		0x00ff
+#define T2_CONTACT_STATE_SHIFT		8
+
+/*
+ * Captured contacts pass through the high byte of path_id_and_state as
+ * 1 -> (2) -> 3 -> 4 -> 5 -> (6) -> 7 -> 0. The median proximity was about
+ * 30 in states 1, 2 and 6, about 110 and 160 in states 3 and 4, and 0 in
+ * state 7. Contacts also went from 2 straight to 7 without ever touching,
+ * so only states 3..5 are reported.
+ */
+#define T2_CONTACT_STATE_FIRST_TOUCH	3
+#define T2_CONTACT_STATE_LAST_TOUCH	5
+
+/*
+ * Low byte of identity: the firmware's classification of the contact.
+ * Captures produced 1 for a thumb, 2..5 for four fingers in hand order,
+ * 7 for palm heels and a flat hand, 12 for a thumb or palm heel resting on
+ * the bottom edge, and 0 only while a contact was entering range. Values
+ * above 5 are therefore not fingers. The high byte is not decoded.
+ */
+#define T2_CONTACT_IDENTITY_MASK	0x00ff
+#define T2_CONTACT_IDENTITY_FINGER_LAST	5
 
 #define T2_FORCE_Q16_ONE		65536
-#define T2_FORCE_HYSTERESIS_SCALE_Q16	1311 /* Tahoe: 0.02 */
-#define T2_FORCE_HYSTERESIS_MIN_Q16	98304 /* Tahoe: 1.5 */
-#define T2_FORCE_HYSTERESIS_MAX_Q16	983040 /* Tahoe: 15.0 */
-#define T2_FORCE_HYSTERESIS_ALPHA_Q16	9830 /* Tahoe: 0.15 */
-/* MTForceFilter's this+0xc, from MTForceFilter::MTForceFilter's field init (0x3f75c28f = 0.96f). */
-#define T2_FORCE_OUTPUT_ALPHA_Q16	62915 /* Tahoe: 0.96 */
-/* Tahoe's default (medium-strength) MTForceConfig for force-capable trackpads. */
+#define T2_FORCE_HYSTERESIS_SCALE_Q16	1311
+#define T2_FORCE_HYSTERESIS_MIN_Q16	98304
+#define T2_FORCE_HYSTERESIS_MAX_Q16	983040
+#define T2_FORCE_HYSTERESIS_ALPHA_Q16	9830
+#define T2_FORCE_OUTPUT_ALPHA_Q16	62915
+/* Default (medium-strength) force thresholds for force-capable trackpads. */
 #define T2_FORCE_ACTIVATION_BASE_Q16	(125 * T2_FORCE_Q16_ONE)
 #define T2_FORCE_RELEASE_BASE_Q16	(93 * T2_FORCE_Q16_ONE + 49152) /* 93.75 */
 /* Firmware sparse-frame limit for per-contact force state. */
 #define T2_FORCE_MISSING_FRAME_TOLERANCE	3
 
 /*
- * MTForceThresholding::getClickThresholdMultiplier's real table (0x43c040,
- * data at 0x44ab9c): light/medium/firm scale the base thresholds by
- * 0.8/1.0/1.2. This is macOS's own "Click" pressure setting.
+ * Light/medium/firm scale the base thresholds by 0.8/1.0/1.2. This is macOS's own "Click" pressure setting.
  */
 #define T2_CLICK_STRENGTH_LIGHT_Q16	52429  /* 0.8 */
 #define T2_CLICK_STRENGTH_MEDIUM_Q16	65536  /* 1.0 */
@@ -151,41 +170,33 @@ MODULE_PARM_DESC(force_trace_trigger_pressure,
 	"raw pressure that arms the bounded Force Touch observation trace");
 
 /*
- * Reconstruction of position-hysteresis
- * (MTParserPath::pullHysteresisCenterHidingUnstablePixelDeltasXY, 0x40f55c):
- * position moves toward the raw contact by at most a per-frame budget,
- * budget = instability * scale. touchTimeDebounce and the Z-signal delta
- * portion of contactZShape are reconstructed. Their constants are from
- * MTParameterFactory::initPathFilterParams (0x434a10) and the Tahoe
- * MTPathFilterParameters observed on a MacBookPro15,1, respectively.
- * The remaining terms require further reconstruction:
+ * Position hysteresis: position moves toward the raw contact by at most
+ * a per-frame budget, budget = instability * scale. The touch time
+ * debounce and the Z-signal delta portion of the contact shape term are
+ * implemented. The remaining terms are not:
  *
- * - contactZShape's sliding and large-ellipse branches:
- *   MTParserPath::computeZSignalInstability. They need Tahoe's parser-state
- *   transition, not an invented motion threshold.
- * - divingButtonZone: MTParserPath::computeDivingButtonChangeInstability.
- *   depends on macOS's button-zone state.
- * - restingHand: MTParserPath::isStuckOnDivingRegion plus its hand state.
- * - buttonTimeDebounce: the button-stage timing path in measureInstability.
+ * - the contact shape's sliding and large-ellipse branches. They need a
+ *   parser-state transition, not an invented motion threshold.
+ * - the diving button zone, which depends on button-zone state.
+ * - the resting hand term plus its hand state.
+ * - the button-stage timing debounce.
  *
  */
 #define T2_INSTABILITY_STRONG_MS	50
 #define T2_INSTABILITY_WEAK_MS		312
 #define T2_Q16_ONE			65536
 
-/* Tahoe MTPathFilterParameters at computeZSignalInstability (Q16). */
+/* Z-signal delta window (Q16). */
 #define T2_Z_DELTA_PERCENT_LOW_Q16	(4 * T2_Q16_ONE)
 #define T2_Z_DELTA_PERCENT_HIGH_Q16	(8 * T2_Q16_ONE)
 
 static unsigned int hysteresis_budget_max = 512;
 module_param(hysteresis_budget_max, uint, 0644);
 MODULE_PARM_DESC(hysteresis_budget_max,
-	"pointer step budget (raw position units) at instability=1.0; our own bridge constant, not Tahoe's");
+	"pointer step budget (raw position units) at instability=1.0; our own bridge constant");
 
 /*
- * The disassembly reads as budget growing *with* instability, which
- * contradicts the function's own name and could not be resolved by
- * re-checking the SIMD. Non-inverted, budget decays to 0 and stays there,
+ * Non-inverted, budget decays to 0 and stays there,
  * permanently freezing position. Inverted is the
  * only polarity that does not lock up, so this should be it.
  */
@@ -203,7 +214,8 @@ MODULE_PARM_DESC(position_hysteresis_invert,
 struct t2_trackpad_finger {
 	/* Firmware path ID in the low byte. The high byte is contact state. */
 	__le16 path_id_and_state;
-	__le16 unknown2;
+	/* Contact identity in the low byte. */
+	__le16 identity;
 	__le16 abs_x;
 	__le16 abs_y;
 	__le16 rel_x;
@@ -211,7 +223,7 @@ struct t2_trackpad_finger {
 	__le16 tool_major;
 	__le16 tool_minor;
 	__le16 orientation;
-	/* MTContact.proximity, unsigned Q8 (confirmed with Tahoe FBT). */
+	/* Contact proximity, unsigned Q8. */
 	__le16 proximity_q8;
 	__le16 touch_minor;
 	__le16 unused[2];
@@ -259,9 +271,9 @@ struct t2_trackpad_geometry {
 
 struct t2_mt_force_filter {
 	s32 hysteretic_force_q16;
-	/* MTForceFilter's this+8: the asymmetrically-smoothed final output. */
+	/* The asymmetrically-smoothed final output. */
 	s32 output_q16;
-	/* MTForceFilter's this+0x10: raw pressure smoothed before hysteresis. */
+	/* Raw pressure smoothed before hysteresis. */
 	s32 smoothed_input_q16;
 };
 
@@ -277,13 +289,13 @@ struct t2_force_management {
 	bool force_click_activated;
 };
 
-/* Per-slot hysteresis center and its Tahoe-derived Z history, keyed by path_id. */
+/* Per-slot hysteresis center and its Z history, keyed by path_id. */
 struct t2_slot_hysteresis {
 	s32 x;
 	s32 y;
 	u64 touch_start_ns;
 	u16 path_id;
-	/* T2 proximity_q8 is MTContact.proximity, not a reported input axis. */
+	/* Contact proximity, used for the Z-signal term, not a reported input axis. */
 	u16 previous_proximity_q8;
 	/* Set only while this firmware path is present in the current report. */
 	bool present_this_frame;
@@ -320,6 +332,29 @@ static u16 t2_trackpad_ellipse_axis(__le16 radius)
 	return min_t(int, max_t(int, t2_s16(radius), 0) * 2, U16_MAX);
 }
 
+static bool t2_trackpad_contact_touching(const struct t2_trackpad_finger *finger)
+{
+	u8 state = le16_to_cpu(finger->path_id_and_state) >> T2_CONTACT_STATE_SHIFT;
+
+	return state >= T2_CONTACT_STATE_FIRST_TOUCH &&
+	       state <= T2_CONTACT_STATE_LAST_TOUCH;
+}
+
+/*
+ * Palm and edge contacts stay visible to libinput as MT_TOOL_PALM instead
+ * of disappearing. Dropping the slot would look like a lift-off and can
+ * produce a tap, and a finger that turns into a palm mid-contact keeps its
+ * tracking ID, so the pointer does not jump.
+ */
+static unsigned int t2_trackpad_contact_tool(const struct t2_trackpad_finger *finger)
+{
+	u8 identity = le16_to_cpu(finger->identity) & T2_CONTACT_IDENTITY_MASK;
+
+	if (identity > T2_CONTACT_IDENTITY_FINGER_LAST)
+		return MT_TOOL_PALM;
+	return MT_TOOL_FINGER;
+}
+
 static s32 t2_mt_update_hysteretic_force(struct t2_mt_force_filter *filter,
 					  u16 force)
 {
@@ -329,10 +364,8 @@ static s32 t2_mt_update_hysteretic_force(struct t2_mt_force_filter *filter,
 	s32 raw_q16;
 
 	/*
-	 * MTForceFilter::updateForceFilter (0x43b94a), first stage: raw
-	 * pressure is smoothed before hysteresis, not fed in directly. We
-	 * do not have the real velocity-gated alpha choice, so this reuses
-	 * the one confirmed alpha (0.15/0.85). Without it, single-frame
+	 * First stage: raw pressure is smoothed before hysteresis, not fed
+	 * in directly. This reuses the hysteresis alpha (0.15/0.85). Without it, single-frame
 	 * sensor noise right at a threshold crossing caused a real,
 	 * few-ms spurious BTN_MOUSE release immediately after activation.
 	 */
@@ -354,9 +387,8 @@ static s32 t2_mt_update_hysteretic_force(struct t2_mt_force_filter *filter,
 		candidate_q16 = filter->hysteretic_force_q16;
 
 	/*
-	 * MTForceFilter::updateHystereticForce (0x43ba88). Alpha weights the
-	 * old value (0.15 old, 0.85 new). Fast tracking of the candidate.
-	 * Confirmed from the disassembly.
+	 * Hysteretic force. Alpha weights the old value (0.15 old, 0.85 new).
+	 * Fast tracking of the candidate.
 	 */
 	filtered_q16 = (s64)T2_FORCE_HYSTERESIS_ALPHA_Q16 *
 		filter->hysteretic_force_q16 +
@@ -365,10 +397,9 @@ static s32 t2_mt_update_hysteretic_force(struct t2_mt_force_filter *filter,
 	filter->hysteretic_force_q16 = filtered_q16 / T2_FORCE_Q16_ONE;
 
 	/*
-	 * MTForceFilter::updateForceFilter (0x43b94a), second stage.
-	 * Asymmetric: rising is damped 0.96 old/0.04 new, falling is instant.
-	 * This is a separate, delayed filter output. Tahoe's force-stage
-	 * classification uses the hysteretic stage above, rather than this value.
+	 * Second stage. Asymmetric: rising is damped 0.96 old/0.04 new,
+	 * falling is instant. This is a separate, delayed filter output. The
+	 * force-stage classification uses the hysteretic stage above.
 	 */
 	if (filter->hysteretic_force_q16 > filter->output_q16) {
 		s64 output_q16 = (s64)T2_FORCE_OUTPUT_ALPHA_Q16 * filter->output_q16 +
@@ -416,11 +447,10 @@ static void t2_trackpad_analyze_and_manage_strongest_forces(
 	int i;
 
 	/*
-	 * MTForceManagement::isForceButtonActivated uses the strongest active
-	 * MTForceFilter hysteretic value. MTParserPath::measureInstability
-	 * buttonTimeDebounce remains pending in the position path.
+	 * The force button uses the strongest active hysteretic value. The
+	 * button-stage timing debounce remains pending in the position path.
 	 *
-	 * Tahoe locks the strongest progress path once activation occurs.
+	 * The strongest progress path is locked once activation occurs.
 	 * A path missing for only a few frames still counts, matching the
 	 * filter-state tolerance in t2_trackpad_finish_force_frame.
 	 */
@@ -429,8 +459,8 @@ static void t2_trackpad_analyze_and_manage_strongest_forces(
 		    force->paths[i].missing_frames >= T2_FORCE_MISSING_FRAME_TOLERANCE)
 			continue;
 		/*
-		 * Tahoe's force thresholding consumes MTForceFilter's hysteretic
-		 * value (this+0x28), not its delayed output (this+0x08). Using the
+		 * Force thresholding consumes the hysteretic value, not the
+		 * delayed output. Using the
 		 * latter made a short physical click disappear before the 0.04
 		 * rising filter could cross the threshold.
 		 */
@@ -473,7 +503,7 @@ static bool t2_trackpad_finish_force_frame(struct t2_trackpad *tp)
 	int i;
 
 	/*
-	 * The current report's presence map must remain intact through Tahoe's
+	 * The current report's presence map must remain intact through the
 	 * strongest-path decision. raw_event() starts the following report with
 	 * a fresh map, so only filters for contacts missing from this report are
 	 * discarded here.
@@ -533,18 +563,14 @@ static int t2_trackpad_get_geometry(struct t2_trackpad *tp,
 	int ret;
 
 	/*
-	 * macOS's AppleMultitouchHidPlugin first asks its MTDevice for
-	 * MTDeviceGetParserType() and MTDeviceGetParserOptions().  Its
-	 * MultitouchHIDClass startup dispatches type 1000 to
-	 * MTTrackpadHIDManager and type 1001 to MTTrackpadEmbeddedHIDManager:
-	 * these select a parser/transport path, not a model-specific calibration
-	 * profile.  Keep that distinction when migrating another hid_t2magicmouse
-	 * device: identify its report path before adding support.
+	 * The device's parser type selects a parser/transport path, not a
+	 * model-specific calibration profile. Keep that distinction when
+	 * migrating another hid_t2magicmouse device: identify its report path
+	 * before adding support.
 	 *
 	 * Vendor GET_FEATURE 0xd9 is not represented in the ordinary HID input
 	 * descriptor. It returns the report ID, little-endian width and height in
-	 * 1/100 mm, then signed coordinate endpoints. MTDevice exposes the same
-	 * sensor surface to AppleMultitouchHidPlugin.
+	 * 1/100 mm, then signed coordinate endpoints.
 	 *
 	 * Resolution is 100 * coordinate span / surface length in raw units per
 	 * millimetre. Geometry belongs to the attached T2 device.
@@ -664,7 +690,7 @@ static void t2_trackpad_close(struct input_dev *input)
 
 static u32 t2_trackpad_touch_time_instability_q16(u64 elapsed_ns)
 {
-	/* MTParserPath::measureInstability touchTimeDebounce term. */
+	/* Touch time debounce term of the instability. */
 	u32 elapsed_ms = elapsed_ns / NSEC_PER_MSEC;
 	u32 strong = 0, weak = 0;
 
@@ -688,15 +714,13 @@ static u32 t2_trackpad_z_signal_instability_q16(
 	u64 cube_q32;
 
 	/*
-	 * MTParserPath::computeZSignalInstability reads MTContact.proximity
-	 * (this+0x48) and its preceding value (this+0xa8). FBT on Tahoe proved
-	 * that T2's proximity_q8 supplies that value: 0x008d / 256.0 is
-	 * Tahoe's observed 0.55078 proximity. pressure is Force Touch instead.
+	 * The Z-signal term uses the contact proximity and its preceding
+	 * value. proximity_q8 supplies it (0x008d / 256.0 = 0.55078).
+	 * pressure is Force Touch instead.
 	 *
-	 * Tahoe's disassembly forms abs(delta) * 100 / max(current, previous),
-	 * maps its live MTPathFilterParameters window 4.0..8.0 to 0..1, then
-	 * raises it to 1.5. sqrt(x^3) is our fixed-point reconstruction of that
-	 * scalar branch. It is not evidence for the still-unimplemented branches.
+	 * The term is abs(delta) * 100 / max(current, previous), mapped from
+	 * the window 4.0..8.0 to 0..1, then raised to 1.5. sqrt(x^3) is the
+	 * fixed-point form of that scalar branch.
 	 */
 	denominator_q8 = max_t(u16, proximity_q8, hys->previous_proximity_q8);
 	if (!denominator_q8)
@@ -720,7 +744,8 @@ static u32 t2_trackpad_z_signal_instability_q16(
 }
 
 static void t2_trackpad_report_finger(struct t2_trackpad *tp, int slot,
-				       const struct t2_trackpad_finger *finger)
+				       const struct t2_trackpad_finger *finger,
+				       unsigned int tool)
 {
 	struct t2_slot_hysteresis *hys = &tp->hysteresis[slot];
 	struct input_dev *input = tp->input;
@@ -734,7 +759,7 @@ static void t2_trackpad_report_finger(struct t2_trackpad *tp, int slot,
 	s32 budget;
 	s32 x, y;
 
-	/* MTParserPath state is reset at a new firmware contact lifetime. */
+	/* Filter state is reset at a new firmware contact lifetime. */
 	if (!hys->valid || hys->path_id != path_id) {
 		hys->valid = true;
 		hys->path_id = path_id;
@@ -760,12 +785,11 @@ static void t2_trackpad_report_finger(struct t2_trackpad *tp, int slot,
 	hys->present_this_frame = true;
 
 	input_mt_slot(input, slot);
-	input_mt_report_slot_state(input, MT_TOOL_FINGER, true);
+	input_mt_report_slot_state(input, tool, true);
 	/*
 	 * Keep the established Linux touch/width split for libinput: the firmware's
 	 * Q8 proximity channel remains the touch-size signal while tool_major/minor
-	 * describe the enclosing width ellipse below.  Tahoe uses the latter as
-	 * MTContact radii internally.
+	 * describe the enclosing width ellipse below.
 	 */
 	input_report_abs(input, ABS_MT_TOUCH_MAJOR,
 			 t2_trackpad_ellipse_axis(finger->proximity_q8));
@@ -788,7 +812,7 @@ static int t2_trackpad_path_slot(struct input_dev *input,
 	/*
 	 * The first T2 word evolves 0x4xx -> 0x5xx -> 0x7xx -> 0x0xx over
 	 * liftoff while xx remains stable. That stable portion is the persistent
-	 * firmware path identity required by Tahoe's MTPathStates. It replaces
+	 * firmware path identity. It replaces
 	 * nearest-position assignment, which can exchange paths during a drag.
 	 */
 	u16 path_id = le16_to_cpu(finger->path_id_and_state) &
@@ -805,9 +829,8 @@ static void t2_trackpad_trace_force_frame(struct t2_trackpad *tp,
 	int i;
 
 	/*
-	 * Tahoe's MTPathStates::forwardFirmwareDistributedForces uses per-path
-	 * firmware force, velocity and frame interval.On T2, pressure is the
-	 * decoded per-contact candidate for that force.The other raw fields are
+	 * On T2, pressure is the decoded per-contact candidate for the
+	 * per-path firmware force. The other raw fields are
 	 * logged only to establish path identity and click-source rules from
 	 * captures.
 	 */
@@ -840,9 +863,10 @@ static void t2_trackpad_trace_force_frame(struct t2_trackpad *tp,
 		const struct t2_trackpad_finger *finger = &frame->fingers[i];
 
 		hid_info(tp->hdev,
-			 "force contact[%d]: u1=%d u2=%d pos=%d,%d rel=%d,%d "
+			 "force contact[%d]: u1=%d identity=%#x pos=%d,%d rel=%d,%d "
 			 "proximity=%d touch_minor=%d tool=%d,%d pressure=%d multi=%d unused=%d,%d\n",
-			 i, t2_s16(finger->path_id_and_state), t2_s16(finger->unknown2),
+			 i, t2_s16(finger->path_id_and_state),
+			 le16_to_cpu(finger->identity),
 			 t2_s16(finger->abs_x), t2_s16(finger->abs_y),
 			 t2_s16(finger->rel_x), t2_s16(finger->rel_y),
 			 t2_s16(finger->proximity_q8), t2_s16(finger->touch_minor),
@@ -863,8 +887,7 @@ static int t2_trackpad_raw_event(struct hid_device *hdev,
 	bool force_button;
 	int i;
 
-	/* AppleMultitouchHIDEventDriverV2::handleInterruptReport receives this
-	 * mouse prefix followed by the vendor contact frame. */
+	/* The report is a mouse prefix followed by the vendor contact frame. */
 	if (size < mouse_size || data[0] != T2_TRACKPAD_REPORT_ID)
 		return 0;
 
@@ -893,9 +916,11 @@ static int t2_trackpad_raw_event(struct hid_device *hdev,
 
 	for (i = 0; i < frame->num_fingers; i++) {
 		const struct t2_trackpad_finger *finger = &frame->fingers[i];
+		unsigned int tool;
 		int slot;
 
-		if (!t2_s16(finger->proximity_q8))
+		if (!t2_s16(finger->proximity_q8) ||
+		    !t2_trackpad_contact_touching(finger))
 			continue;
 
 		slot = t2_trackpad_path_slot(tp->input, finger);
@@ -905,8 +930,11 @@ static int t2_trackpad_raw_event(struct hid_device *hdev,
 				 T2_CONTACT_PATH_ID_MASK);
 			continue;
 		}
-		t2_trackpad_report_finger(tp, slot, finger);
-		t2_trackpad_forward_firmware_distributed_forces(tp, slot, finger);
+		tool = t2_trackpad_contact_tool(finger);
+		t2_trackpad_report_finger(tp, slot, finger, tool);
+		/* A resting palm must never become the click or force click source. */
+		if (tool == MT_TOOL_FINGER)
+			t2_trackpad_forward_firmware_distributed_forces(tp, slot, finger);
 	}
 	for (i = 0; i < T2_MAX_CONTACTS; i++) {
 		if (tp->hysteresis[i].valid &&
@@ -984,11 +1012,13 @@ static int t2_trackpad_input_configured(struct hid_device *hdev,
 	input_set_abs_params(input, ABS_MT_WIDTH_MAJOR, 0, U16_MAX, 0, 0);
 	input_set_abs_params(input, ABS_MT_WIDTH_MINOR, 0, U16_MAX, 0, 0);
 	/*
-	 * MTContact.force feeds MTForceFilter and is not advertised as
+	 * Per-contact force feeds the force filter and is not advertised as
 	 * ABS_MT_PRESSURE. libinput derives contact lifetime from MT slots.
 	 */
 	input_set_abs_params(input, ABS_MT_ORIENTATION, -T2_MAX_ORIENTATION,
 			     T2_MAX_ORIENTATION, 0, 0);
+	/* libinput enables its MT_TOOL_PALM handling when this axis exists. */
+	input_set_abs_params(input, ABS_MT_TOOL_TYPE, 0, MT_TOOL_MAX, 0, 0);
 
 	/* Placeholder bounds. t2_trackpad_query_dimensions() overwrites these. */
 	input_set_abs_params(input, ABS_MT_POSITION_X, SHRT_MIN, SHRT_MAX, 0, 0);
@@ -1103,12 +1133,8 @@ static struct hid_driver t2_trackpad_driver = {
 	.input_mapping = t2_trackpad_input_mapping,
 	.input_configured = t2_trackpad_input_configured,
 	/*
-	 * No .suspend/.resume/.reset_resume here. macOS's own userspace HID
-	 * plugin does the same for this exact device class: both
-	 * MTTrackpadEmbeddedHIDManager::setPowerState and
-	 * ::setPowerStateWithReset are stubs that log "Unsupported" and
-	 * return kIOReturnUnsupported. Power management for the internal T2
-	 * trackpad happens below this layer, in the transport. There is
+	 * No .suspend/.resume/.reset_resume here. Power management for the
+	 * internal T2 trackpad happens below this layer, in the transport. There is
 	 * nothing for the touch parser itself to do on suspend/resume.
 	 */
 };

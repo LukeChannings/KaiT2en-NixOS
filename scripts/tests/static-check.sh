@@ -29,6 +29,8 @@ shell_files=(
 	scripts/fedora/install-kernel-args.sh
 	scripts/fedora/install-kernel-source.sh
 	scripts/fedora/install-gpu-runtime-pm.sh
+	scripts/fedora/install-i915.sh
+	scripts/fedora/install-thunderbolt.sh
 	scripts/fedora/install-wireless.sh
 	scripts/fedora/install-rtc-sync.sh
 	scripts/fedora/lib.sh
@@ -138,8 +140,8 @@ grep -Fq 'rebuilt initramfs is missing required module' \
 for module in acpi_tad applesmc macsmc_core macsmc_acpi macsmc_hwmon \
 		macsmc_light macsmc_accel leds_macsmc macsmc_wdt rtc_macsmc \
 		macsmc_power hid_apple hid_appletb_bl hid_appletb_kbd hid_magicmouse \
-		appletbdrm apple_mfi_fastcharge apple_gmux t2bce_dma t2bce_core \
-		t2bce_vhci t2hid; do
+		appletbdrm apple_mfi_fastcharge apple_gmux apple-t2-bridge \
+		apple-t2-vhci-hcd t2hid; do
 	grep -Fq "\"$module\"" apps/t2-kernel-builder/t2-kernel-builder-cleanup
 done
 grep -Fq 'installation rolled back' \
