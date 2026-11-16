@@ -45,7 +45,7 @@
 }:
 
 let
-  baseKernel = pkgs.linux_7_2; # ← kernel bumps touch only this line
+  baseKernel = pkgs.linux_7_3; # ← kernel bumps touch only this line
 
   # Content-address the patch by its own bytes, NOT as a subpath of the flake
   # source. When KaiT2en is consumed as a `path:`/git flake input, every file in
