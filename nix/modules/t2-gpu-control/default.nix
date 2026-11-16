@@ -55,6 +55,29 @@ let
   dgpuHelper = "${cfg.dgpuPackage}/libexec/t2-dgpu-control-helper";
   hybridHelper = "${cfg.hybridPackage}/libexec/t2-hybrid-gpu-control-helper";
   esp = config.boot.loader.efi.efiSysMountPoint;
+
+  # Moves the t2-gpu-preboot entry (the helper's PREBOOT_LOADER) to the front
+  # of BootOrder, the step `sync-preboot` stopped taking for an existing entry.
+  prebootFirst = pkgs.writeShellScript "kait2en-gpu-preboot-first" ''
+    set -euo pipefail
+    PATH=${
+      lib.makeBinPath [
+        pkgs.efibootmgr
+        pkgs.gawk
+        pkgs.gnused
+        pkgs.gnugrep
+        pkgs.coreutils
+      ]
+    }
+    entry=$(efibootmgr | LOADER='\EFI\kait2en\t2-gpu-preboot.efi' awk '
+      BEGIN { loader = tolower(ENVIRON["LOADER"]) }
+      /^Boot[0-9A-Fa-f]{4}/ && index(tolower($0), loader) { print substr($1, 5, 4); exit }')
+    [[ -n "$entry" ]] || exit 0
+    order=$(efibootmgr | sed -n 's/^BootOrder: //p')
+    [[ "''${order%%,*}" == "$entry" ]] && exit 0
+    order=$(tr ',' '\n' <<<"$order" | grep -vix "$entry" | paste -sd,)
+    efibootmgr --quiet --bootorder "$entry''${order:+,$order}"
+  '';
 in
 {
   options.hardware.kait2en.gpuControl = {
@@ -138,8 +161,8 @@ in
 
         Off by default, unlike upstream's installer, because switching it on
         writes to the machine's NVRAM: it adds a "KaiT2en GPU" boot entry and
-        moves it to the front of BootOrder, which is not something a
-        `nixos-rebuild` would otherwise do.
+        keeps it at the front of BootOrder on every boot, which is not
+        something a `nixos-rebuild` would otherwise do.
 
         Setting it back to `false` stops the image being installed, but the
         NVRAM entry is not NixOS' to garbage-collect -- clear it by hand
@@ -184,12 +207,15 @@ in
       boot.loader.systemd-boot.extraFiles."EFI/kait2en/t2-gpu-preboot.efi" =
         "${cfg.hybridPackage}/share/t2-hybrid-gpu-control/t2-gpu-preboot.efi";
 
-      # upstream Makefile `install`: `helper sync-preboot`. It is idempotent --
-      # it creates the "KaiT2en GPU" entry only when absent, deletes duplicates
-      # from older runs and moves the entry first in BootOrder only when it is
-      # not already there -- so running it every boot is a no-op once settled.
-      # Every boot is deliberate: `bootctl install` puts systemd-boot back at
-      # the front of BootOrder whenever it runs, and this has to win.
+      # upstream Makefile `install`: `helper sync-preboot`. It is idempotent:
+      # it creates the "KaiT2en GPU" entry first in BootOrder only when it is
+      # absent and deletes duplicates from older runs. Since upstream f56bae5
+      # an existing entry keeps its position, so another boot manager placed
+      # ahead of it stays the default. Here the only boot manager is
+      # systemd-boot, which the image chainloads anyway, and `bootctl install`
+      # puts it back at the front of BootOrder whenever it runs -- which would
+      # silently stop the preboot running at all. So ExecStartPost moves the
+      # entry first again, every boot; once settled it is a no-op.
       systemd.services.kait2en-gpu-preboot-sync = {
         description = "Keep the t2-gpu-preboot UEFI boot entry first in BootOrder";
         unitConfig.ConditionPathIsDirectory = "/sys/firmware/efi/efivars";
@@ -200,6 +226,7 @@ in
           Type = "oneshot";
           RemainAfterExit = true;
           ExecStart = "${hybridHelper} sync-preboot";
+          ExecStartPost = "${prebootFirst}";
         };
       };
     })
