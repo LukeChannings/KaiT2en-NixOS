@@ -256,15 +256,33 @@ hunk drifted). If the gate then fails on the new kernel, hold the kernel back
 one series (keep the nixpkgs bump) and record the blocker under Known blockers.
 Kernel changes are their own commit.
 
+**ZFS hold-back.** `nixpkgs-zfs` (flake input, pinned by rev) supplies the base
+kernel of `hardware.kait2en.zfs` (`nix/modules/kait2en-zfs`, `packages.kernel-zfs`,
+`check-macbookair9-1-zfs`): the newest series OpenZFS supports, 7.2.13 from
+31ecbaca, the last nixos-unstable before nixpkgs removed linux_7_2. Every sync,
+check whether the main nixpkgs' `zfs` still marks the selected series broken:
+
+```sh
+nix eval --raw --impure --expr 'let p = (builtins.getFlake (toString ./.)).inputs.nixpkgs.legacyPackages.x86_64-linux; in "${p.zfs.version} broken-on-latest=${toString p.linuxPackages_latest.${p.zfs.kernelModuleAttribute}.meta.broken}"'
+```
+
+Once it is not, delete the input, the module, `kernel-zfs` and the check
+system. Until then the runtime series must still apply to the held-back
+kernel. gpu-runtime-pm already does not (rebased onto 7.3), which the module
+asserts, and the reason the ZFS check uses the dGPU-less MacBookAir9,1. If
+wireless, thunderbolt or i915 stop applying too, the ZFS gate fails:
+re-evaluate the hold-back instead of patching around it.
+
 ### 8. Gate
 
 ```sh
 nix fmt
-nix flake check -L     # or: just test
+just test              # nix flake check only checks the host system: on a Mac it skips x86_64-linux
 ```
 
-The checks output is the complete gate: every package (kernel included) and the
-three per-profile NixOS toplevels. Fix forward until green. Checks derive from
+The checks output is the complete gate: every package (both kernels included)
+and the four NixOS toplevels (three profiles, plus the MacBookAir9,1 on the ZFS
+kernel). Fix forward until green. Checks derive from
 the package set and `checkConfigurations` in `flake.nix` — new packages and
 profiles are gated automatically, but a new *profile* must be added to
 `checkConfigurations`. Every app packaged in pass A is gated the moment it is

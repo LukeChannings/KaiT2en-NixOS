@@ -40,12 +40,16 @@
 # Any bump must re-check the SPI-HID ABI patch below against the new kernel's
 # include/linux/hid.h (drop the patch if HID_SPI_DEVICE went in-tree; rebase
 # it if the hunk drifted).
+#
+# `baseKernel` is a parameter only so the ZFS variant (nix/modules/kait2en-zfs)
+# can hold back to the newest series OpenZFS supports, from the nixpkgs-zfs
+# input; everything else takes the default.
 {
   pkgs,
+  baseKernel ? pkgs.linux_7_3, # ← kernel bumps touch only this line
 }:
 
 let
-  baseKernel = pkgs.linux_7_3; # ← kernel bumps touch only this line
 
   # Content-address the patch by its own bytes, NOT as a subpath of the flake
   # source. When KaiT2en is consumed as a `path:`/git flake input, every file in

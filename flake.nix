@@ -12,6 +12,14 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
 
+    # Held back for ZFS (nix/modules/kait2en-zfs): OpenZFS 2.4.4 supports
+    # kernels up to 7.2, and nixpkgs removed linux_7_2 (end of life) on
+    # 2026-11-06. This is the last nixos-unstable carrying it (7.2.13, the
+    # final 7.2 release); only its base kernel is used. Pinned by rev so
+    # `nix flake update` cannot move it past the removal. Drop it once
+    # nixpkgs' zfs supports the series nix/pkgs/kernel selects.
+    nixpkgs-zfs.url = "github:nixos/nixpkgs/31ecbaca1bdefa45dffc409f0250bd8039ea0010";
+
     flake-parts.url = "github:hercules-ci/flake-parts";
     flake-parts.inputs.nixpkgs-lib.follows = "nixpkgs";
 
@@ -36,10 +44,10 @@
         checkConfigurations =
           let
             mkCheckSystem =
-              profile:
+              profile: extraModules:
               nixpkgs.lib.nixosSystem {
                 system = "x86_64-linux";
-                modules = [
+                modules = extraModules ++ [
                   profile
                   (
                     { lib, ... }:
@@ -65,10 +73,24 @@
               };
           in
           {
-            check-macbookpro16-1 = mkCheckSystem ./nix/profiles/macbookpro16-1.nix;
-            check-macbookpro16-4 = mkCheckSystem ./nix/profiles/macbookpro16-4.nix;
-            check-macbookair9-1 = mkCheckSystem ./nix/profiles/macbookair9-1.nix;
+            check-macbookpro16-1 = mkCheckSystem ./nix/profiles/macbookpro16-1.nix [ ];
+            check-macbookpro16-4 = mkCheckSystem ./nix/profiles/macbookpro16-4.nix [ ];
+            check-macbookair9-1 = mkCheckSystem ./nix/profiles/macbookair9-1.nix [ ];
+            # ZFS on the held-back 7.2 kernel (nix/modules/kait2en-zfs). The
+            # MacBookAir9,1 has no dGPU, so nothing needs the gpu-runtime-pm
+            # amdgpu, which does not build on 7.2; every other out-of-tree
+            # module and patched driver is built against that kernel here.
+            check-macbookair9-1-zfs = mkCheckSystem ./nix/profiles/macbookair9-1.nix [
+              kait2enZfsModule
+              {
+                hardware.kait2en.zfs.enable = true;
+                networking.hostId = "8425e349";
+              }
+            ];
           };
+
+        # nix/modules/kait2en-zfs needs the pinned nixpkgs-zfs input.
+        kait2enZfsModule = import ./nix/modules/kait2en-zfs { inherit (inputs) nixpkgs-zfs; };
       in
       {
         imports = [ inputs.treefmt-nix.flakeModule ];
@@ -144,6 +166,9 @@
             t2-drop = ./nix/modules/t2-drop;
             t2-airshare = ./nix/modules/t2-airshare;
             kait2en-utilities = ./nix/modules/kait2en-utilities;
+            # Not in `default`: it closes over the nixpkgs-zfs input. Boots the
+            # KaiT2en kernel on 7.2 so ZFS works (hardware.kait2en.zfs.enable).
+            kait2en-zfs = kait2enZfsModule;
           };
 
           # Home-manager modules. `kait2en-utilities` is the declarative
@@ -238,6 +263,12 @@
                 default = kait2enKernel;
                 # The patched KaiT2en kernel (Fedora-matched base + SPI-HID ABI patch).
                 kernel = kait2enKernel;
+                # The same, on the 7.2 base kernel from nixpkgs-zfs, for ZFS
+                # (hardware.kait2en.zfs).
+                kernel-zfs = import ./nix/pkgs/kernel {
+                  inherit pkgs;
+                  baseKernel = inputs.nixpkgs-zfs.legacyPackages.${pkgs.stdenv.hostPlatform.system}.linux_7_2;
+                };
                 inherit audioUcmConf;
                 # amdgpu + the gpu-runtime-pm series (hardware.kait2en.gpuRuntimePm).
                 gpu-runtime-pm = pkgs.callPackage ./nix/pkgs/gpu-runtime-pm { kernel = kait2enKernel; };
