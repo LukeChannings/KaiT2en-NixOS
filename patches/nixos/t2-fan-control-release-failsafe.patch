@@ -6,6 +6,11 @@ module's ExecStopPost), and drive fans to max when the temperature
 is unknown, so fans are never left latched in manual mode with the
 firmware's protective curve disabled.
 
+Rebased in the 2026-11-15 sync onto upstream 8c7f725, whose daemon
+blocks in recv() while the SMC is in charge: SIGTERM/SIGINT now share
+the SIGHUP signal thread, which flags the shutdown and wakes the loop,
+instead of a flag the loop would only see on its next tick.
+
 Applied by apps/t2-fan-control/package.nix on top of the upstream
 source (-p1 relative to apps/t2-fan-control).
 
@@ -14,11 +19,9 @@ SMC auto on termination itself (look for a SIGTERM handler or
 `--release`/ExecStopPost equivalent in apps/t2-fan-control).
 Re-check every sync.
 
-diff --git a/src/control.rs b/src/control.rs
-index c94c597..74e4d47 100644
 --- a/src/control.rs
 +++ b/src/control.rs
-@@ -178,7 +178,13 @@ impl Controller {
+@@ -178,7 +178,13 @@
  
      fn apply(&mut self, fans: &mut [FanEndpoint], percent: Option<u8>) -> Result<()> {
          for fan in fans {
@@ -33,12 +36,23 @@ index c94c597..74e4d47 100644
              fan.set_target_speed(rpm)?;
              fan.current_speed = Some(rpm);
              fan.app_controlled = Some(true);
-diff --git a/src/main.rs b/src/main.rs
-index 37267c8..c1aa8d6 100644
 --- a/src/main.rs
 +++ b/src/main.rs
-@@ -30,7 +30,7 @@ use gtk4::{
-     GestureDrag, Grid, Label, LinkButton, Orientation, Popover, PositionType, Switch, gdk,
+@@ -10,7 +10,11 @@
+     cell::{Cell, RefCell},
+     collections::VecDeque,
+     rc::Rc,
+-    sync::mpsc,
++    sync::{
++        atomic::{AtomicBool, Ordering},
++        mpsc,
++        Arc,
++    },
+     thread,
+     time::Duration,
+ };
+@@ -28,7 +32,7 @@
+     gdk,
  };
  use ipc::{DaemonState, Request};
 -use signal_hook::consts::signal::SIGHUP;
@@ -46,7 +60,7 @@ index 37267c8..c1aa8d6 100644
  use sysfs::{discover_fans, discover_temperature_sources, FanEndpoint, TemperatureSnapshot, TemperatureSource};
  
  fn kait2en_brand() -> DrawingArea {
-@@ -361,6 +361,19 @@ impl AppModel {
+@@ -355,6 +359,19 @@
  }
  
  fn main() -> glib::ExitCode {
@@ -66,7 +80,7 @@ index 37267c8..c1aa8d6 100644
      if std::env::args().any(|arg| arg == "--daemon") {
          if let Err(error) = daemon_main() {
              eprintln!("{error}");
-@@ -378,6 +391,14 @@ fn main() -> glib::ExitCode {
+@@ -372,6 +389,14 @@
      app.run()
  }
  
@@ -80,30 +94,40 @@ index 37267c8..c1aa8d6 100644
 +
  fn daemon_main() -> error::Result<()> {
      let listener = ipc::bind_listener()?;
-     let (connections_tx, connections_rx) = mpsc::channel();
-@@ -393,9 +414,37 @@ fn daemon_main() -> error::Result<()> {
-             source,
+     // SIGHUP arrives as None on the same channel so a sleeping daemon wakes
+@@ -382,14 +407,29 @@
+             break;
          }
-     })?;
-+
+     });
+-    let mut signals = signal_hook::iterator::Signals::new([SIGHUP]).map_err(|source| {
 +    // Release the fans back to SMC auto control on termination. The daemon owns
 +    // the fans while running (it sets fanN_manual=1 / writes _target), which
 +    // DISABLES the firmware's protective max-on-hot curve. If we exit without
 +    // releasing — systemctl stop, shutdown, the suspend-time teardown, OOM, or a
 +    // panic — the fans stay latched at the last speed we wrote with no thermal
-+    // governor behind them, so the box silently overheats. Trap SIGTERM/SIGINT,
-+    // hand the fans back, then exit. (A SIGKILL or hard hang can't be caught;
-+    // the systemd unit's ExecStopPost is the backstop for those.)
++    // governor behind them, so the box silently overheats. SIGTERM/SIGINT come
++    // through the SIGHUP thread, flag the shutdown and wake the loop (which may
++    // be blocked in recv() with the SMC in charge); it hands the fans back and
++    // exits. (A SIGKILL or hard hang can't be caught; the systemd unit's
++    // ExecStopPost is the backstop for those.)
 +    let term_requested = Arc::new(AtomicBool::new(false));
-+    for signal in [SIGTERM, SIGINT] {
-+        signal_hook::flag::register(signal, term_requested.clone()).map_err(|source| {
-+            error::FanControlError::Io {
-+                path: std::path::PathBuf::from("<signal-hook>"),
-+                source,
++    let term_flag = term_requested.clone();
++    let mut signals = signal_hook::iterator::Signals::new([SIGHUP, SIGTERM, SIGINT]).map_err(|source| {
+         error::FanControlError::Io {
+             path: std::path::PathBuf::from("<signal-hook>"),
+             source,
+         }
+     })?;
+     thread::spawn(move || {
+-        for _ in signals.forever() {
++        for signal in signals.forever() {
++            if signal != SIGHUP {
++                term_flag.store(true, Ordering::Relaxed);
 +            }
-+        })?;
-+    }
-+
+             if hup_tx.send(None).is_err() {
+                 break;
+             }
+@@ -398,6 +438,15 @@
      let mut runtime = DaemonRuntime::new()?;
  
      loop {
@@ -116,10 +140,18 @@ index 37267c8..c1aa8d6 100644
 +            return Ok(());
 +        }
 +
-         if reload_requested.swap(false, Ordering::Relaxed) {
-             runtime.reload_config()?;
-         }
-@@ -527,6 +576,17 @@ impl DaemonRuntime {
+         runtime.tick();
+         // With the SMC in charge the readings only feed the UI, so the
+         // daemon sleeps until the UI asks again
+@@ -407,6 +456,7 @@
+             connections_rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+         };
+         match next {
++            Ok(None) if term_requested.load(Ordering::Relaxed) => {}
+             Ok(None) => runtime.reload_config()?,
+             Ok(Some(Ok((stream, _addr)))) => {
+                 let request = ipc::read_request(&stream);
+@@ -537,6 +587,17 @@
          }
      }
  
