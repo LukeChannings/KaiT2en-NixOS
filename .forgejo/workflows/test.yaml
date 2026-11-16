@@ -33,7 +33,12 @@ jobs:
     # from macOS and routes the derivations to its linux-builder, which
     # offers x86_64-linux through Rosetta.
     runs-on: nixos-latest-x86_64
-    timeout-minutes: 360
+    # One cold kernel already takes ~6h on snowman's builder (run 94: 5h50m;
+    # run 97 hit the old 360 at 6h00m building the 7.2 ZFS kernel while
+    # hartlandia's jobs shared the builder). A change to nix/pkgs/kernel
+    # rebuilds both kernels -- the main one and the held-back ZFS one -- so
+    # allow two. The runner's own cap is 24h.
+    timeout-minutes: 720
     steps:
       # The link to the forge drops streams -- hartlandia's build.yaml
       # retries its LFS pull for exactly this reason. Run 10 of this
