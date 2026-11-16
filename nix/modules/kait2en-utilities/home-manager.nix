@@ -52,6 +52,7 @@ let
     "org.t2dgpucontrol.gtk.desktop"
     "org.t2debug.gtk.desktop"
     "org.t2airshare.gtk.desktop"
+    "org.t2truetone.gtk.desktop"
   ];
 
   # Run as a NixOS-integrated home-manager (`home-manager.users.<name>`) and

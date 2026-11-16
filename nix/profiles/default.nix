@@ -18,6 +18,7 @@
 # DSP — importing every model's graph at once would be contradictory), so do
 # not import it directly: pick a concrete profile (e.g. ./macbookpro16-1.nix).
 {
+  config,
   lib,
   pkgs,
   ...
@@ -60,6 +61,11 @@
   # linux-firmware blobs: amdgpu (Navi) on the dGPU models, plus assorted
   # platform firmware. hardware.kait2en.firmware only covers Wi-Fi/Bluetooth.
   hardware.enableRedistributableFirmware = lib.mkDefault true;
+
+  # install-apps.sh: T2 TrueTone on every Mac with the ambient light sensor
+  # (all of these models) that runs GNOME Shell. It stays off until a user
+  # starts it in the app.
+  services.t2-truetone.enable = lib.mkDefault config.services.desktopManager.gnome.enable;
 
   # Enable Thunderbolt management
   services.hardware.bolt.enable = lib.mkDefault true;

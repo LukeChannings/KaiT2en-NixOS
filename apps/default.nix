@@ -28,6 +28,7 @@ in
   t2-sidecar = callPackage ./t2-sidecar/package.nix { };
   t2-drop = callPackage ./t2-drop/package.nix { };
   t2-airshare = callPackage ./t2-airshare/package.nix { inherit branding; };
+  t2-truetone = callPackage ./t2-truetone/package.nix { };
 
   # dsp/ (host-side PipeWire/WirePlumber speaker + mic DSP).
   t2-dsp = callPackage ../dsp/package.nix { };
@@ -36,5 +37,4 @@ in
   t2-journal = callPackage ../t2-services/t2-journal/package.nix { };
   t2-ave = callPackage ../t2-services/t2-ave/package.nix { };
   t2-touchid = callPackage ../t2-services/t2-touchid/package.nix { };
-  t2-autobrightness = callPackage ../t2-services/t2-autobrightness/package.nix { };
 }

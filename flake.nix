@@ -139,7 +139,7 @@
             t2-gpu-control = ./nix/modules/t2-gpu-control;
             t2-kbd-backlight = ./nix/modules/t2-kbd-backlight;
             t2-debug = ./nix/modules/t2-debug;
-            t2-autobrightness = ./nix/modules/t2-autobrightness;
+            t2-truetone = ./nix/modules/t2-truetone;
             t2-sidecar = ./nix/modules/t2-sidecar;
             t2-drop = ./nix/modules/t2-drop;
             t2-airshare = ./nix/modules/t2-airshare;
