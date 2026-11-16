@@ -4,9 +4,12 @@
 # scripts/fedora/install-suspend-service.sh (the old systemd/ directory is
 # gone): a oneshot bound to sleep.target, ordered after NetworkManager and
 # t2-services-suspend, that runs scripts/fedora/kait2en-suspend.sh:
-#   * pre  (ExecStart, before sleep): unload drivers that wedge S3 on certain
-#     T2 Macs — the BCM4377 Wi-Fi/BT stack (brcmfmac{,_wcc} + hci_bcm4377), or
-#     on BCM4350 machines (MacBookPro14,1) just brcmfmac.
+#   * pre  (ExecStart, before sleep): unload drivers that wedge S3 — now only
+#     brcmfmac{,_wcc} on BCM4350 machines (MacBookPro14,1). The BCM4377
+#     Wi-Fi/BT stack used to be unloaded too; upstream dropped that once the
+#     runtime wireless series (hardware.kait2en.wireless: PCIe state before
+#     D0_INFORM, probing again after a resume through firmware) let it
+#     suspend in place.
 #   * post (ExecStop,  after resume): reload exactly the modules it unloaded,
 #     tracked via marker files under /run/kait2en-suspend.
 #
@@ -59,6 +62,13 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    warnings = lib.optional (!config.hardware.kait2en.wireless.enable) ''
+      services.kait2en-suspend no longer unloads the BCM4377 Wi-Fi/Bluetooth
+      drivers around S3: upstream relies on the resume fixes of the patched
+      drivers instead. Without hardware.kait2en.wireless the stock brcmfmac
+      and hci_bcm4377 may not come back after a resume.
+    '';
+
     systemd.services.kait2en-suspend = {
       description = "Kait2en T2 suspend and resume hardware fixes";
       before = [ "sleep.target" ];
