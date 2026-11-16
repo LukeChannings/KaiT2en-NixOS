@@ -13,6 +13,15 @@ merged upstream sources into the Nix layer and take the gate green.
 
 **Run this skill on `sync/upstream`, comparing against `main`.**
 
+If `origin/sync/upstream` is not ahead of `main` (it is an ancestor, or
+missing) while upstream has new commits, the bot's run failed: check the
+`Sync with upstream` task (`fj actions tasks`). A merge that conflicts with no
+sync PR open pushes nothing (nixham `upstream-sync/sync.sh`), so the first
+merge is yours to make, exactly as the bot would: `git switch -C sync/upstream
+origin/main`, `git merge --no-ff -m "Merge kaiT2en/KaiT2en-Fedora at <12>"
+<upstream tip>`, resolve by the ownership table below, push, and open the PR
+yourself (`fj pr create`). The 2026-11-15 sync started that way.
+
 **Philosophy:** `modules/`, `apps/`, `t2-services/` and `dsp/` *sources* stay
 **byte-identical to upstream**. Everything NixOS-specific lives in the Nix layer
 (`nix/`, `*/package.nix`, `*/default.nix`, `patches/nixos/`). Divergence policy:
@@ -150,7 +159,7 @@ Then sweep the categories that break without deleting a file:
   the source of truth for upstream's kernel parameters and modprobe blacklists;
   `scripts/fedora/rebuild-initramfs.sh` `EARLY_MODULES` for the initrd list.
   DMI/PCI-conditional args map to options (`hardware.kait2en.amdgpuAspm`,
-  `pcieAspm`, `acpiOsiOverride`) whose defaults follow the installer's *generic*
+  `pcieAspm`, `pciePortsCompat`, `acpiOsiOverride`) whose defaults follow the installer's *generic*
   branch and which every profile sets explicitly — the installer probes DMI/PCI
   that Nix eval cannot.
 - **App → model mapping** — `install-apps.sh` `install_gpu_control`, Touch Bar
@@ -310,7 +319,7 @@ not-consumed entry is a policy violation.
 
 | Upstream sources | Ours |
 |---|---|
-| `modules/t2bce_core`, `t2bce_dma`, `t2bce_vhci`, `t2bce_audio`, `t2bce_stack`, `t2-services/t2-ave/kernel/{t2bce_ave,t2bce_sidecar}` | single `t2bce` derivation (dma→core→vhci→audio→ave→sidecar build order via upstream's `t2bce_stack`; `t2bce_ave` and `t2bce_sidecar` staged as siblings like `install-dkms-modules.sh` `copy_module_source`; `t2bce_ave` loaded only by `services.t2-ave`, `t2bce_sidecar` autoloads by modalias) |
+| `modules/apple-t2-bridge` (Kbuild tree: `apple-t2-bridge`, `apple-t2-vhci-hcd`, `snd-apple-t2`), `t2-services/t2-ave/kernel/{t2-ave,t2-sidecar}` | single `apple-t2-bridge` derivation (one top-level Kbuild; `t2-ave` and `t2-sidecar` staged into the tree like `install-dkms-modules.sh` `copy_module_source`; `t2-ave` (and optionally `t2-sidecar`) loaded by `services.t2-ave`'s `ExecStartPre`, `t2-sidecar` also autoloads by modalias). Replaced the `t2bce_*` split in the 2026-11-15 sync |
 | `modules/t2smc` | `t2smc` (initrd) |
 | `modules/t2sbs` | `t2sbs` (initrd; Smart Battery `charge_control_end_threshold`, replaces the blacklisted in-tree `sbs`) |
 | `modules/t2bdrm` | `t2bdrm` |
@@ -320,7 +329,7 @@ not-consumed entry is a policy violation.
 | `modules/hid_t2magicmouse` | `hid_t2magicmouse` (needs the SPI-HID ABI kernel patch; external mice only now) |
 | `modules/t2_precision_trackpad`, `modules/t2_trackpad_actuator` | `t2_precision_trackpad`, `t2_trackpad_actuator` (internal trackpad + Force Click haptics) |
 | `modules/t2touchbar` | `t2touchbar` (`t2hid` (initrd), `t2touchbar_bl`, `t2touchbar_kbd`) |
-| `modules/t2thunderbolt` | `t2thunderbolt` |
+| `modules/t2thunderbolt` | **retired upstream** (2026-11-15 sync, `RETIRED_MODULES`) for the patched in-tree driver — see the Thunderbolt row |
 | `scripts/fedora/install-dkms-modules.sh`, `rebuild-initramfs.sh` `EARLY_MODULES` | `loadModules` / `initrdModules` defaults |
 | `modules/apfs` | **dropped, following upstream** — point users at nixpkgs' apfs |
 | `modules/t2sep` | **not packaged** — upstream legacy (Touch ID moved to `t2-services/t2-touchid`) |
@@ -333,7 +342,14 @@ Version bumps in any `dkms.conf` must land in the matching derivation.
 |---|---|
 | `scripts/fedora/install-gpu-runtime-pm.sh` + `patches/runtime/gpu-runtime-pm/{series,*.patch}` | `nix/pkgs/gpu-runtime-pm` (out-of-tree amdgpu from `kernel.src` + the series against `kernel.dev`, installed to `updates/kait2en-gpu-runtime-pm`; mirrors the script's `patch_needed_for_kernel` skip list, `--forward --fuzz=3` + already-applied tolerance and the `TRACE_INCLUDE_PATH` sed) + `hardware.kait2en.gpuRuntimePm` (`softdep amdgpu pre: t2gmux`). Upstream's supported-model list → profiles enable it (15,1 / 16,1 / 16,4; iMac20,x if a profile is added). New entries in `patch_needed_for_kernel` → `patchNeeded`. |
 | `apps/t2-dgpu-control`, `apps/t2-hybrid-gpu-control` (+ `install-apps.sh` `install_gpu_control` model map) | `package.nix` each + shared `nix/modules/t2-gpu-control` (`gpuControl.mode = "dgpu" \| "hybrid"`; hybrid warns without `gpuRuntimePm`) |
-| `apps/t2-hybrid-gpu-control/preboot` (`t2-gpu-preboot.efi`, the `x86_64-unknown-uefi` crate upstream `873ac3d` added) + the Makefile's ESP copy + the helper's `sync-preboot` | `apps/t2-hybrid-gpu-control/preboot.nix` (built with `-Z build-std`, see its header) → the image ships in the app's `share/t2-hybrid-gpu-control/`, and `hardware.kait2en.gpuControl.hybridPreboot` (**opt-in**, unlike upstream's installer: it writes NVRAM) places it with `boot.loader.systemd-boot.extraFiles` and reasserts the boot entry each boot with `kait2en-gpu-preboot-sync` running the helper's idempotent `sync-preboot`. `remove-preboot` is not wired to anything — turning the option off leaves the NVRAM entry for the user to clear. |
+| `apps/t2-hybrid-gpu-control/preboot` (`t2-gpu-preboot.efi`, the `x86_64-unknown-uefi` crate upstream `873ac3d` added) + the Makefile's ESP copy + the helper's `sync-preboot` | `apps/t2-hybrid-gpu-control/preboot.nix` (built with `-Z build-std`, see its header) → the image ships in the app's `share/t2-hybrid-gpu-control/`, and `hardware.kait2en.gpuControl.hybridPreboot` (**opt-in**, unlike upstream's installer: it writes NVRAM) places it with `boot.loader.systemd-boot.extraFiles` and reasserts the boot entry each boot with `kait2en-gpu-preboot-sync` running the helper's idempotent `sync-preboot`, then an `ExecStartPost` that moves the entry first in BootOrder (the helper stopped doing that for an existing entry in f56bae5; see the divergence register). `remove-preboot` is not wired to anything — turning the option off leaves the NVRAM entry for the user to clear. |
+
+### Thunderbolt and Intel graphics (runtime patch series)
+
+| Upstream sources | Ours |
+|---|---|
+| `scripts/fedora/install-thunderbolt.sh` + `patches/runtime/thunderbolt/{series,*.patch}` | `nix/pkgs/thunderbolt` (drivers/thunderbolt from `kernel.src` + the series against `kernel.dev`, installed to `updates/kait2en-thunderbolt`; `apply_patch_if_needed` semantics) + `hardware.kait2en.thunderbolt`. The script's `is_supported_model` (T2 bridge + Titan Ridge 8086:15e8/15eb or Ice Lake 8086:8a0d/8a17 NHI) → the profiles enable it. Replaced `t2thunderbolt`; with it, `pcie_ports=compat` left the command line. |
+| `scripts/fedora/install-i915.sh` + `patches/runtime/i915/{series,*.patch}` | `nix/pkgs/i915` (drivers/gpu/drm + `drivers/platform/x86/intel_ips.h` from `kernel.src`; `drm_display_helper` then `i915` with `M=`, installed to `updates/kait2en-i915`; mirrors the KUnit `obj-n` sed and `rewrite_trace_path` for the four trace headers) + `hardware.kait2en.i915`. `is_supported_model` (MacBook*/iMac* with an Intel GPU at 00:02.0) → the profiles enable it. |
 
 ### Wireless
 
@@ -345,9 +361,9 @@ Version bumps in any `dkms.conf` must land in the matching derivation.
 
 | Upstream sources | Ours |
 |---|---|
-| `dsp/` (`profiles/`, `config/models.json`, `tools/build.py`, `integration/wireplumber`, `Makefile` `install`) | `dsp/package.nix` (`t2-dsp`: build.py + the Makefile's install layout into `$out`) |
+| `dsp/` (`profiles/`, `config/models.json`, `tools/build.py`, `integration/wireplumber`, `Makefile` `install`) | `dsp/package.nix` (`t2-dsp`: build.py + the Makefile's install layout into `$out`, plus the speaker-routing divergence patch) |
 | `scripts/fedora/install-dsp.sh`, `packaging/lifecycle` `configure_dsp_pipewire` | `nix/modules/t2bce-audio-dsp`: udev + WirePlumber from the package, the `model`'s `share/t2-dsp/pipewire/<model>.conf` as `pipewire.conf.d/51-t2-dsp.conf` (replaces the lifecycle's DMI pick), LV2 via `requiredLv2Packages` |
-| `modules/t2bce_audio-alsa-ucm-conf/ucm2`, `scripts/fedora/install-alsa-ucm.sh` | `nix/pkgs/t2bce_audio-alsa-ucm-conf` (stock tree + AppleT2 overlay) → `ALSA_CONFIG_UCM2` on pipewire/wireplumber + `environment.variables` |
+| `modules/apple-t2-alsa-ucm-conf/ucm2` (was `modules/t2bce_audio-alsa-ucm-conf` until the 2026-11-15 sync), `scripts/fedora/install-alsa-ucm.sh` | `nix/pkgs/t2bce_audio-alsa-ucm-conf` (stock tree + AppleT2 overlay, plus the speaker-direct divergence patch) → `ALSA_CONFIG_UCM2` on pipewire/wireplumber + `environment.variables`. The package and option names keep `t2bce` for compatibility. |
 
 New `dsp/profiles/<model>` / `models.json` entries → extend the module's `model`
 enum + consider a new profile.
@@ -368,6 +384,7 @@ enum + consider a new profile.
 | `apps/t2-drop` (`systemd/t2-drop.service`, `dbus/`, `networkmanager/90-t2-drop-awdl.conf`) | `package.nix` + `nix/modules/t2-drop` (Type=dbus unit, ip/nmcli on PATH; Bluetooth on), on in every profile; needs `hardware.kait2en.wireless` |
 | `apps/t2-airshare` (`systemd/{t2-airshare,t2-quickshare-hotspot}.service`, `dbus/`, `integration/`) | `package.nix` + `nix/modules/t2-airshare`, on in every profile. **Exception to native units:** the per-user `t2-airshare.service` ships as a file via `systemd.packages`, because the app's receive toggle runs `systemctl --user enable/disable` and needs its `[Install]`. The root hotspot unit is native (iw/ip/nmcli on PATH). `integration/migrate-t2-share.sh` not consumed. |
 | `apps/t2-sidecar` (`t2-sidecar{,-sunshine}.service`, `install.sh`) | `package.nix` + `nix/modules/t2-sidecar`, **opt-in** (GNOME-only; inert without the T2-encoder Sunshine fork, which `sunshine.package` supplies) |
+| `apps/t2-truetone` (`systemd/t2-truetone.service`, `udev/70-t2-truetone.rules`, `integration/gnome-shell`; `install-apps.sh` + `lib.sh` `has_ambient_light_sensor`) | `package.nix` + `nix/modules/t2-truetone`, on in every profile under GNOME (it stays stopped until a user starts it in the app). **Exception to native units**, like t2-airshare: the user unit ships as a file (`systemd.packages`) because the app runs `systemctl --user enable/disable --now`. Replaced `t2-services/t2-autobrightness` in the 2026-11-15 sync (`services.t2-autobrightness.*` are removed options); `install.sh`'s per-user migration is not consumed. |
 | `apps/t2-kernel-builder` | **not ported** — Fedora COPR tooling; our kernel comes from nixpkgs |
 | `apps/kait2en-update` (+ `scripts/fedora/update-map`) | **not ported** — the Fedora installer's updater; on NixOS updating is a flake bump |
 | `assets/kait2en-app-logo{,-light}.png`, `assets/fonts` (`install-apps.sh` `install_app_assets`) | `nix/pkgs/kait2en-branding` (both wordmarks + JetBrains Mono → `fonts.packages`) + `nix/lib/kait2en-polkit.nix` `rewriteFhsPaths` (rewrites both wordmark paths) |
@@ -381,15 +398,14 @@ enum + consider a new profile.
 | `t2-services/t2-ave` (`integration/systemd`, sleep hook), `scripts/fedora/install-t2-remote.sh` | `package.nix` + `services.t2-ave` |
 | `t2-services/t2-touchid` (`integration/{systemd,fprintd,dbus}`, `config/`), `scripts/fedora/install-touchid.sh` | `package.nix` + `services.t2-touchid` (fprintd from `services.fprintd`; SELinux policy not consumed) |
 | `t2-services/t2-journal` | `package.nix` only (CLI) |
-| `t2-services/t2-autobrightness` (`integration/{systemd,gnome-shell}`), `scripts/fedora/install-autobrightness.sh` | `package.nix` (extension under `share/gnome-shell/extensions`, gsettings on PATH) + `nix/modules/t2-autobrightness` (native user unit), **opt-in** like install.sh `ask_autobrightness` |
 
 ### System integration
 
 | Upstream sources | Ours |
 |---|---|
-| `scripts/fedora/install-suspend-service.sh` (inline unit) + `scripts/fedora/kait2en-suspend.sh` | `nix/modules/kait2en-suspend` (consumes the script directly from the tree) |
+| `scripts/fedora/install-suspend-service.sh` (inline unit) + `scripts/fedora/kait2en-suspend.sh` | `nix/modules/kait2en-suspend` (consumes the script directly from the tree; since the 2026-11-15 sync it leaves the BCM4377 stack loaded and relies on `hardware.kait2en.wireless`, warning without it) |
 | `scripts/fedora/install-rtc-sync.sh` (inline unit) | `nix/modules/kait2en-rtc-sync` |
-| `scripts/fedora/install-kernel-args.sh` (kernel args, modprobe blacklists, model conditionals) | `nix/modules/kait2en-kernel` `kernelParams`/blacklists + `amdgpuAspm`/`pcieAspm`/`acpiOsiOverride`, set per profile in `nix/profiles/*` |
+| `scripts/fedora/install-kernel-args.sh` (kernel args, `REMOVE_ARGS`, modprobe blacklists, model conditionals) | `nix/modules/kait2en-kernel` `kernelParams`/blacklists + `amdgpuAspm`/`pcieAspm`/`pciePortsCompat`/`acpiOsiOverride`, set per profile in `nix/profiles/*`. `pm_async=off` (in `REMOVE_ARGS`) is kept only without `hardware.kait2en.wireless`. |
 | macOS firmware extraction (`auto-installer/runtime/install-{wifi,bt}-firmware.sh`) | `nix/pkgs/brcm-firmware` + `nix/modules/brcm-firmware` (local design, no 1:1 upstream file — review when the firmware steps change) |
 
 ### Not consumed (changes never need porting)
@@ -406,7 +422,8 @@ install-plymouth-theme.sh, install-dependencies.sh, build-installer.sh,
 kait2en-multicall, lib.sh, install.sh, update-map, install-kernel-source.sh,
 install-macos-mount.sh, other/, deprecated/}` (`install-macos-mount.sh` is the
 APFS mount helper; apfs is dropped),
-`t2-services/*/packaging`,
+`t2-services/*/packaging`, `apps/t2-truetone/install.sh` (the autobrightness
+migration), `scripts/fedora/install-gdm-branding.sh` and its new opt-in prompt,
 `t2-services/shared/integration/{migration,libexec/package-actions}`,
 `dsp/{tests,packaging,integration/libexec}`,
 `patches/{upstream,archived,currently-testing}/**` (opt-in candidates only),
@@ -425,9 +442,11 @@ upstream `.github/**`, `PLAN.md`, docs, `LICENSE*`/`LICENSING.md`/`AUTHORS`/
 
 | Patch | Drop condition |
 |---|---|
-| `patches/nixos/t2-fan-control-release-failsafe.patch` (rebased onto upstream's reworked `control.rs` in the 2026-10-17 sync; rebased again in the 2026-10-19 sync for the native-SMC switch — upstream now releases at *startup* in native mode, not on termination). Its `--release` relies on t2smc treating `fanN_target=0` as hand-back (upstream `513a82d`); with older t2smc that write latched the fan in manual mode at 0 rpm | upstream releases fans to SMC auto on daemon termination (SIGTERM handler or `--release`/ExecStopPost equivalent) |
-| `patches/nixos/t2-power-tune-vhci-exclude.patch` (added in the 2026-10-19 sync; was the in-tree edit `92d2a1b`) | upstream's `t2-power-tune-helper` excludes `t2bce_vhci` devices from the wakeup/runtime-PM tunables in `scan()` and `validate()` |
+| `patches/nixos/t2-fan-control-release-failsafe.patch` (rebased onto upstream's reworked `control.rs` in the 2026-10-17 sync; rebased again in the 2026-10-19 sync for the native-SMC switch — upstream now releases at *startup* in native mode, not on termination; rebased in the 2026-11-15 sync onto the daemon that sleeps in `recv()` while the SMC is in charge: SIGTERM/SIGINT share the SIGHUP signal thread and wake the loop). Its `--release` relies on t2smc treating `fanN_target=0` as hand-back (upstream `513a82d`); with older t2smc that write latched the fan in manual mode at 0 rpm | upstream releases fans to SMC auto on daemon termination (SIGTERM handler or `--release`/ExecStopPost equivalent) |
+| `patches/nixos/t2-power-tune-vhci-exclude.patch` (added in the 2026-10-19 sync; was the in-tree edit `92d2a1b`; rebased in the 2026-11-15 sync from `t2bce_vhci` onto `/apple_t2_bridge.vhci.` in the sysfs path — the old match silently matched nothing after the driver rename) | upstream's `t2-power-tune-helper` excludes the devices behind `apple-t2-vhci-hcd` from the wakeup/runtime-PM tunables in `scan()` and `validate()` |
+| `patches/nixos/t2-dsp-speaker-dsp-only.patch` + `patches/nixos/apple-t2-alsa-ucm-conf-speaker-direct.patch` (a pair; added in the 2026-11-15 sync, were the in-tree edits `fe14b8f`/`3811916`): Speaker straight at `hw:${CardId},0` instead of upstream's identity split, the node renamed/`Audio/Sink/Internal`, the card's `[Out] Speaker` port hidden, the DSP sink named after the machine family | upstream makes the DSP sink the only selectable internal speaker device (raw node hidden from both the sink list and the card's ports) |
 | `nix/pkgs/kernel/patches/0001-hid-add-spi-hid-device-types-and-macro.patch` (kernel ABI, not app) | `HID_SPI_DEVICE` + SPI `hid_type` members land in the in-tree `include/linux/hid.h` |
+| `kait2en-gpu-preboot-sync`'s `ExecStartPost` (Nix layer, not a patch): moves the "KaiT2en GPU" entry first in BootOrder every boot. Upstream's `sync-preboot` keeps an existing entry where it is since f56bae5, but `bootctl install` puts systemd-boot — which the image chainloads anyway — back in front, which would stop the preboot running for good | upstream's helper (or the image) reasserts the preboot entry's BootOrder position itself, or systemd-boot stops reordering BootOrder |
 | `preboot.nix`'s `substituteInPlace` of `CHAINLOAD` in `preboot/src/main.rs` (not a file in `patches/nixos`, but a divergence all the same — upstream hardcodes `\EFI\fedora\shimx64.efi` and `grubx64.efi`) | upstream reads the chainload path from a variable or a config file instead of `cstr16!` constants |
 
 (`patches/runtime/gpu-runtime-pm` is upstream's own series, consumed via the GPU
@@ -440,13 +459,22 @@ row, not a divergence.)
   first with `nix path-info --store https://nix.channings.me <kernel.dev>`; if
   the working `flake.lock` pins an uncached kernel, gate against the committed
   lock instead (`--reference-lock-file`). The 2026-11-01 sync gated every
-  package and all three toplevels that way (kernel 7.2.11). Opt-in modules
-  (`t2-autobrightness`, `t2-sidecar`) are in no profile, so evaluate them via
-  `extendModules` on a check system.
+  package and all three toplevels that way (kernel 7.2.11). The 2026-11-15
+  sync could not: nixpkgs removed 7.2 (EOL), so the 7.3.4 bump was
+  mandatory and the kernel was built on the linux-builder. Modules no
+  check system enables (`t2-sidecar`, opt-in; `t2-truetone`, which the
+  profiles turn on only under GNOME; `gpuControl.hybridPreboot`) are
+  evaluated via `extendModules` on a check system.
 - **Hardware-only behaviour of the 2026-11-01 sync**: the unmanaged NCM link
   coming up from udev (t2remote/Touch ID/t2journal reach bridgeOS, and survive
   suspend), AWDL/AirDrop, Quick Share's Bluetooth→hotspot hand-off and Sidecar
   can only be proven on a T2 Mac.
+- **Hardware-only behaviour of the 2026-11-15 sync**: the apple-t2-bridge
+  stack replacing t2bce (keyboard, trackpad, Touch Bar, audio and the NCM link
+  all hang off it, early in the initrd), async suspend with `pm_async=off`
+  gone, Thunderbolt RTD3 with `pcie_ports=compat` gone, the patched i915 (PSR
+  on the Apple panel, gmux brightness restore) and the BCM4377 staying loaded
+  across S3 can only be proven on a T2 Mac.
 - **`t2-gpu-preboot` is systemd-boot only, and unproven on hardware.** The
   module asserts `boot.loader.systemd-boot.enable`, because the image is
   placed with its `extraFiles` and the chainload path is substituted at build
