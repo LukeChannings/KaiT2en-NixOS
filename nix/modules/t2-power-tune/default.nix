@@ -6,10 +6,11 @@
 # environment.systemPackages. It tunes PCIe ASPM / power-saving sysfs at runtime
 # through the helper; there is no persistent unit to define here.
 #
-# (The helper's optional "persist" path writes a generated unit into
-# /etc/systemd/system, which is not the NixOS way — prefer configuring the
-# tunables you want declaratively. The interactive/runtime tuning works
-# regardless.)
+# (The helper's optional "persist" path writes generated units into
+# /etc/systemd/system -- kait2en-power-tune.service and, since upstream
+# fed3805, kait2en-power-tune-resume.service, which reapplies the selection
+# after resume -- which is not the NixOS way: prefer configuring the tunables
+# you want declaratively. The interactive/runtime tuning works regardless.)
 {
   config,
   lib,
