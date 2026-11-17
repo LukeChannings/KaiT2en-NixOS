@@ -54,6 +54,15 @@ in
       source = "${cfg.package}/share/t2-drop/90-t2-drop-awdl.conf";
     };
 
+    # Apple devices open the AirDrop connection themselves, to the server
+    # session.rs binds on awdl0's link-local address (AIRDROP_PORT, the 8770
+    # macOS uses). NixOS's firewall is default-deny, so without this the SYNs
+    # arrive and are dropped and every incoming transfer times out; Fedora
+    # has nothing to declare because the FedoraWorkstation firewalld zone
+    # leaves the high ports open. Scoped to awdl0: the port is only ever
+    # reached over AWDL, never from the WLAN the machine is joined to.
+    networking.firewall.interfaces."awdl0".allowedTCPPorts = [ 8770 ];
+
     # Mirrors systemd/t2-drop.service.
     systemd.services.t2-drop = {
       description = "T2 Drop, AirDrop to Apple devices over AWDL";

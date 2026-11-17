@@ -24,6 +24,27 @@ rustPlatform.buildRustPackage {
 
   src = lib.cleanSource ./.;
 
+  # Deliberate divergence from upstream, kept as patches so `src` stays
+  # byte-identical to super/main and upstream merges can take "theirs"
+  # unconditionally. Each patch header records its drop condition; re-check
+  # them every upstream sync.
+  # builtins.path content-addresses each patch by its own bytes so unrelated
+  # repo edits don't rebuild the package when consumed as a flake input.
+  patches = [
+    (builtins.path {
+      name = "t2-drop-connect-timeout-parameter.patch";
+      path = ../../patches/nixos/t2-drop-connect-timeout-parameter.patch;
+    })
+    (builtins.path {
+      name = "t2-drop-discover-failures.patch";
+      path = ../../patches/nixos/t2-drop-discover-failures.patch;
+    })
+    (builtins.path {
+      name = "t2-drop-airdrop-srv-name.patch";
+      path = ../../patches/nixos/t2-drop-airdrop-srv-name.patch;
+    })
+  ];
+
   cargoLock.lockFile = ./Cargo.lock;
 
   postInstall = ''

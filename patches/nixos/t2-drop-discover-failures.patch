@@ -1,0 +1,197 @@
+KaiT2en-NixOS divergence: ask a receiver that changed its port, say why
+one did not answer, and stop retrying when retrying cannot help.
+
+An Apple device advertises a different AirDrop port depending on what it
+is doing: macOS receives on 8770, and both macOS and iOS advertise a
+high port while they browse for receivers of their own. Only the
+receiver-mode advertisement answers /Discover. Observed on a MacBook Pro
+16,1 against an iPhone 15 over four hours -- the same phone, one MAC:
+
+  17:54 port 58988   18:03 port 58990   19:02 port 8770  <- answered
+  18:14 port 58991   18:54 port 58993   19:35 port 8770
+  19:05 port 58996   19:14 port 58998   19:43 port 8770
+  19:21 port 59000   20:53 port 49784   21:26 port 8770
+
+Three failures compounded, and together they made sending look broken
+while receiving worked:
+
+1. `asked` was keyed on the MAC alone, so the browse-mode port was asked
+   once and the receiver-mode port that followed was never asked at all.
+   It is keyed on the port too now, so a device that switches into
+   receiver mode is asked again at once.
+
+2. A receiver that answers nothing held its MAC in `asked` for the whole
+   DISCOVER_ATTEMPTS budget -- 20 attempts of read timeout, about five
+   minutes -- so the "try again when it shows up the next time" path on a
+   failed discover could not run inside a browse that lasts a minute.
+   Such a receiver is reachable and chose not to serve the request, which
+   retrying does not change, so this ends the loop after the first one,
+   with a message that names what happened.
+
+3. AWDL taken down under the loop. housekeeping() drops awdl0 as "not
+   needed" as soon as the browser leaves, while the discover threads of
+   the peers it found are still running. Their peer address keeps the
+   scope id of the interface that is gone, so every further attempt fails
+   at once with ENETUNREACH and the budget burns in a few seconds:
+
+     18:57:19 ... 18:57:32  waiting for 3a:54:76:5b:84:3d (~13 attempts)
+     18:57:32  discover: Network is unreachable (os error 101)
+     18:57:58  AWDL up                     -- too late, budget spent
+
+   ENETUNREACH now ends the loop with a message that says so. Only
+   ENETUNREACH: the EADDRNOTAVAIL of an address still running duplicate
+   address detection is what the retry loop exists for and must keep
+   being retried.
+
+The CLI message for an empty browse no longer asserts the receiver's
+AirDrop setting as the cause -- it is only one of several -- and points
+at the service log, which now carries the reason.
+
+Applied by apps/t2-drop/package.nix on top of the upstream source
+(-p1 relative to apps/t2-drop).
+
+Drop condition: remove when upstream keys the asked set by port, keeps
+awdl0 up while discover threads are outstanding, and distinguishes a read
+timeout from a connect failure. Re-check every sync.
+
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -72,6 +72,15 @@ enum Cmd {
+     },
+ }
+ 
++/// Shown when a browse turned up nothing. It used to assert the receiver's
++/// AirDrop setting as the cause, which is only the most common one: a
++/// receiver set to everyone that accepts the connection and then does not
++/// answer /Discover lands here too, and the message sent the reader after
++/// the wrong thing. t2-drop.service logs what each receiver answered.
++const NO_RECEIVER: &str = "no AirDrop receiver found. The receiver has to accept AirDrop from \
++     everyone; if it does, the log of t2-drop.service says what the receivers \
++     that were seen answered";
++
+ /// `path`, or `name (n).ext` next to it when it exists.
+ fn free_path(path: &Path) -> PathBuf {
+     if !path.exists() {
+@@ -143,7 +152,7 @@ async fn main() -> Result<()> {
+             .await?;
+             let _ = sender.stop_browse().await;
+             if shown.is_empty() {
+-                bail!("no AirDrop receiver found, the receiver needs AirDrop for everyone");
++                bail!(NO_RECEIVER);
+             }
+             Ok(())
+         }
+@@ -175,7 +184,7 @@ async fn main() -> Result<()> {
+             .await?;
+             let Some((id, receiver)) = target else {
+                 let _ = sender.stop_browse().await;
+-                bail!("no AirDrop receiver found, the receiver needs AirDrop for everyone");
++                bail!(NO_RECEIVER);
+             };
+             println!("sending to {receiver}, accept on the receiver");
+             let r = sender.send(&id, names, fds, &name.unwrap_or_else(hostname)).await;
+--- a/src/session.rs
++++ b/src/session.rs
+@@ -30,6 +30,26 @@ const RECEIVER_TIMEOUT: Duration = Duration::from_secs(30);
+ const ASK_TIMEOUT: Duration = Duration::from_secs(120);
+ /// Port of the own AirDrop server, the one macOS uses.
+ const AIRDROP_PORT: u16 = 8770;
++
++/// The io::Error behind an anyhow chain, if there is one.
++fn io_error(err: &anyhow::Error) -> Option<&std::io::Error> {
++    err.chain().find_map(|e| e.downcast_ref::<std::io::Error>())
++}
++
++/// Whether `err` says the AWDL interface is gone. ENETUNREACH only: the
++/// EADDRNOTAVAIL of an address still running duplicate address detection is
++/// the case the retry loop exists for, and must keep retrying.
++fn awdl_gone(err: &anyhow::Error) -> bool {
++    io_error(err).and_then(std::io::Error::raw_os_error) == Some(libc::ENETUNREACH)
++}
++
++/// Whether `err` is the read timeout of a receiver that accepted the
++/// connection and then never answered.
++fn no_answer(err: &anyhow::Error) -> bool {
++    io_error(err).is_some_and(|e| {
++        matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)
++    })
++}
+ /// TXT flags of the own service, the value macOS 15.4.1 announces.
+ const AIRDROP_FLAGS: u32 = 13311;
+ 
+@@ -127,7 +147,12 @@ fn run(
+     let mut advertised = false;
+     let (found_tx, found_rx) = mpsc::channel::<([u8; 6], u16, Option<String>)>();
+     let mut last_refresh = Instant::now();
+-    let mut asked: HashSet<[u8; 6]> = HashSet::new();
++    // Keyed on the port as well as the MAC: an Apple device advertises a
++    // different port when it browses than when it is a receiver (macOS
++    // receives on 8770), and switching between the two is how it becomes
++    // reachable. Keyed on the MAC alone, the browse-mode port is asked once
++    // and the receiver-mode port that follows is never asked at all.
++    let mut asked: HashSet<([u8; 6], u16)> = HashSet::new();
+     let mut known: HashMap<[u8; 6], Known> = HashMap::new();
+     let mut published: Vec<ReceiverInfo> = Vec::new();
+     while !stop.load(Ordering::Relaxed) {
+@@ -176,11 +201,11 @@ fn run(
+         let new: Vec<_> = awdl
+             .peers
+             .values()
+-            .filter(|p| !asked.contains(&p.mac))
+             .filter_map(|p| p.airdrop.as_ref().map(|a| (p.mac, a.1)))
++            .filter(|key| !asked.contains(key))
+             .collect();
+         for (mac, port) in new {
+-            asked.insert(mac);
++            asked.insert((mac, port));
+             if let Err(err) = awdl.add_peer(mac) {
+                 warn!("peer {}: {err:#}", mac_str(&mac));
+                 continue;
+@@ -197,6 +222,29 @@ fn run(
+                             name = n;
+                             break;
+                         }
++                        // awdl0 was taken down while this ran, so the scope
++                        // in the peer address is stale and every further
++                        // attempt fails at once -- the whole budget would
++                        // burn in a few seconds and the peer would be
++                        // reported as a connect failure it never had.
++                        Err(err) if awdl_gone(&err) => {
++                            warn!(
++                                "discover {}: AWDL went down before it answered",
++                                mac_str(&mac)
++                            );
++                            break;
++                        }
++                        // Connected, asked, no answer until the read timed
++                        // out. The receiver is reachable and chose not to
++                        // serve /Discover, which retrying does not change.
++                        Err(err) if no_answer(&err) => {
++                            warn!(
++                                "discover {}: connected but no answer to /Discover; \
++                                 the receiver may require a sender it can identify",
++                                mac_str(&mac)
++                            );
++                            break;
++                        }
+                         Err(err) if attempt == DISCOVER_ATTEMPTS => {
+                             warn!("discover {}: {err:#}", mac_str(&mac));
+                         }
+@@ -217,7 +265,7 @@ fn run(
+                 }
+                 // Try again when it shows up the next time
+                 None => {
+-                    asked.remove(&mac);
++                    asked.remove(&(mac, port));
+                 }
+             }
+         }
+@@ -230,7 +278,7 @@ fn run(
+                 .and_then(|p| p.last_seen)
+                 .is_some_and(|t| now.duration_since(t) < RECEIVER_TIMEOUT)
+         });
+-        asked.retain(|mac| known.contains_key(mac) || awdl.peers.contains_key(mac));
++        asked.retain(|(mac, _)| known.contains_key(mac) || awdl.peers.contains_key(mac));
+         awdl.peers.retain(|_, p| p.last_seen.is_some_and(|t| now.duration_since(t) < RECEIVER_TIMEOUT));
+ 
+         let mut list: Vec<ReceiverInfo> = known

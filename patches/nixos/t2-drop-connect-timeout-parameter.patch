@@ -1,0 +1,51 @@
+KaiT2en-NixOS divergence: connect() stops ignoring its timeout argument.
+
+Receiver::connect took a `timeout` and used it only for the read and
+write timeouts; the connect itself was hardcoded to 3 s, so the
+argument read as if it bounded reaching the peer when it did not. The
+two are deliberately different -- a peer that has gone away should be
+abandoned in seconds, while its answer may legitimately take much
+longer -- but nothing said so, which is a trap for the next reader (it
+cost a wrong diagnosis once already).
+
+No behaviour change: the 3 s is now the named CONNECT_TIMEOUT and the
+argument is `reply_timeout`, which is what it always was.
+
+Applied by apps/t2-drop/package.nix on top of the upstream source
+(-p1 relative to apps/t2-drop).
+
+Drop condition: remove when upstream names the two timeouts apart.
+Re-check every sync.
+
+--- a/src/airdrop.rs
++++ b/src/airdrop.rs
+@@ -99,6 +99,11 @@ pub struct Reply {
+ 
+ type Tls = StreamOwned<ClientConnection, TcpStream>;
+ 
++/// How long the TCP connection to a receiver may take. A receiver that has
++/// gone away is given up on this quickly, independently of how long its
++/// answer may take once it is connected.
++const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
++
+ impl Receiver {
+     pub fn new(link_local: &str, scope: u32, port: u16) -> Result<Self> {
+         let ip: Ipv6Addr = link_local.parse().context("link local address")?;
+@@ -111,11 +116,13 @@ impl Receiver {
+         Ok(Self { addr: SocketAddrV6::new(ip, port, 0, scope), config: Arc::new(config) })
+     }
+ 
+-    fn connect(&self, timeout: Duration) -> Result<Tls> {
+-        let tcp = TcpStream::connect_timeout(&self.addr.into(), Duration::from_secs(3))
++    /// `reply_timeout` bounds the wait for the receiver's answer, not the
++    /// connect: reaching it is bounded by CONNECT_TIMEOUT.
++    fn connect(&self, reply_timeout: Duration) -> Result<Tls> {
++        let tcp = TcpStream::connect_timeout(&self.addr.into(), CONNECT_TIMEOUT)
+             .with_context(|| format!("connect to {}", self.addr))?;
+-        tcp.set_read_timeout(Some(timeout))?;
+-        tcp.set_write_timeout(Some(timeout))?;
++        tcp.set_read_timeout(Some(reply_timeout))?;
++        tcp.set_write_timeout(Some(reply_timeout))?;
+         let name = ServerName::IpAddress(std::net::IpAddr::V6(*self.addr.ip()).into());
+         let conn = ClientConnection::new(self.config.clone(), name)?;
+         Ok(StreamOwned::new(conn, tcp))

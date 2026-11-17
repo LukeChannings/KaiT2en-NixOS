@@ -1,0 +1,47 @@
+KaiT2en-NixOS divergence: take the AirDrop port only from the AirDrop SRV.
+
+handle_frame() checked the record name for the PTR of the service
+(AIRDROP_PTR_NAME, the compressed _airdrop._tcp.local) but took the port
+from *any* SRV record in the same frame, last one wins. An Apple device
+advertises many services over AWDL, so the port usually belonged to one
+of the others -- the port of an unrelated service on the same host.
+
+Sending it back out gets this right already: service_records() names the
+SRV `<instance>` + AIRDROP_PTR_NAME. Only the parse was missing the
+check.
+
+What it looked like, an iPhone 15 over four hours on one MAC. The
+drifting ports are another service's ephemeral ports, 8770 is the real
+AirDrop one on the few frames whose last SRV was AirDrop's:
+
+  58988  58990  58991  58993  58996  58998  59000  59002  59011  59013
+  49784  62144  and 8770 four times
+
+Every attempt against a wrong port connected, completed the TLS
+handshake, had its POST /Discover ACKed, and was then met with silence
+until the read timed out: the service on that port is not AirDrop and
+has no idea what /Discover is. That reads exactly like a receiver
+refusing an unidentified sender, which is what the CLI then reported,
+and it is why sending looked broken while receiving worked. The four
+frames that did carry 8770 resolved in about three seconds.
+
+Applied by apps/t2-drop/package.nix on top of the upstream source
+(-p1 relative to apps/t2-drop).
+
+Drop condition: remove when upstream matches the SRV record to the
+AirDrop service name. Re-check every sync.
+
+--- a/src/awdl.rs
++++ b/src/awdl.rs
+@@ -364,7 +364,10 @@ impl Awdl {
+                             if let Some(label) = first_label(data) {
+                                 instance = Some(label);
+                             }
+-                        } else if kind == DNS_SRV && data.len() >= 6 {
++                        } else if kind == DNS_SRV
++                            && name.ends_with(&AIRDROP_PTR_NAME)
++                            && data.len() >= 6
++                        {
+                             airdrop = Some(u16::from_be_bytes([data[4], data[5]]));
+                         }
+                     }
