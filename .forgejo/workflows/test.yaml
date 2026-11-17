@@ -62,13 +62,19 @@ jobs:
       # no source branch on the forge, so github.head_ref is the bare
       # "refs/pull/N/head", which `clone -b` rejects. Fetching from a URL
       # instead of adding a remote also keeps the token out of .git/config.
+      #
+      # The token goes in as the *password*, behind a `forgejo` username. As
+      # the username alone it is dropped on the forge's redirect to the
+      # .git/ URL, and git then falls back to prompting: "could not read
+      # Username for 'https://forge.channings.me': No such device or
+      # address", three times over, and the gate fails before it starts.
       - name: Checkout
         env:
           REF: ${{ github.ref }}
           TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          url="https://$TOKEN@forge.channings.me/$GITHUB_REPOSITORY.git"
+          url="https://forgejo:$TOKEN@forge.channings.me/$GITHUB_REPOSITORY.git"
           for i in 1 2 3; do
             rm -rf -- ..?* .[!.]* *
             if git init -q . \
