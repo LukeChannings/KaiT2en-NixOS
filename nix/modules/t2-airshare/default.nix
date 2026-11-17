@@ -9,7 +9,14 @@
 #     enable|disable` on it. So it is the one unit shipped as a *file*
 #     (systemd.packages, ExecStart rewritten by the package) rather than
 #     re-declared natively: a native unit has no [Install] section, and the
-#     toggle would fail.
+#     toggle would fail. A drop-in (overrideStrategy) adds --port to its
+#     ExecStart, which keeps that [Install] section intact.
+#
+# Both halves need a firewall port on NixOS, where nothing is open by
+# default: services.t2-airshare.port for Quick Share here, and 8770 on awdl0
+# for AirDrop in nix/modules/t2-drop. install-apps.sh declares neither
+# because Fedora Workstation's firewalld zone already leaves the high ports
+# open.
 #   * t2-quickshare-hotspot.service (systemd/t2-quickshare-hotspot.service,
 #     hardcodes /usr/local/libexec): the root helper, D-Bus activated
 #     (org.t2airshare.QuickShareHotspot) when a Bluetooth transfer moves to
@@ -41,14 +48,42 @@ in
       defaultText = lib.literalExpression "pkgs.callPackage ../../../apps/t2-airshare/package.nix { }";
       description = "The t2-airshare package.";
     };
+
+    port = lib.mkOption {
+      type = lib.types.port;
+      default = 8771;
+      description = ''
+        TCP port the receiver accepts Quick Share transfers on, opened in the
+        firewall. Senders read it from the mDNS SRV record rather than
+        assuming it, so the value only has to be free.
+
+        Upstream binds port 0 and takes whatever ephemeral port the kernel
+        gives it, which changes on every start of the unit -- including every
+        flip of the app's receive toggle, which runs `systemctl --user
+        enable|disable`. A default-deny firewall cannot name a port that
+        moves, hence the fixed one (see
+        patches/nixos/t2-airshare-daemon-port.patch).
+
+        0 restores the upstream ephemeral behaviour and opens nothing;
+        inbound Quick Share then only works if the port is opened some
+        other way.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
-    warnings = lib.optional (!nm.enable) ''
-      services.t2-airshare moves Bluetooth Quick Share transfers onto a Wi-Fi
-      hotspot through NetworkManager; without it only transfers over a
-      shared Wi-Fi work.
-    '';
+    warnings =
+      lib.optional (!nm.enable) ''
+        services.t2-airshare moves Bluetooth Quick Share transfers onto a Wi-Fi
+        hotspot through NetworkManager; without it only transfers over a
+        shared Wi-Fi work.
+      ''
+      ++ lib.optional (cfg.port == 0) ''
+        services.t2-airshare.port is 0, so the receiver takes a different
+        ephemeral port on every start and nothing is opened in the firewall.
+        Phones still discover the machine over mDNS and Bluetooth, but the
+        transfer itself is refused unless the port is opened some other way.
+      '';
 
     environment.systemPackages = [ cfg.package ];
     services.kait2en-utilities.apps = [ "org.t2airshare.gtk.desktop" ];
@@ -58,6 +93,24 @@ in
 
     services.t2-drop.enable = lib.mkDefault true;
     hardware.bluetooth.enable = lib.mkDefault true;
+
+    # The phone opens the transfer connection to this port. NixOS's firewall
+    # is default-deny, so without this the SYNs arrive and are dropped: the
+    # machine is discoverable over mDNS and Bluetooth but every transfer
+    # times out. Fedora has nothing to declare because the
+    # FedoraWorkstation firewalld zone leaves the high ports open.
+    networking.firewall.allowedTCPPorts = lib.optional (cfg.port != 0) cfg.port;
+
+    # The unit stays the packaged file (see above); this only overrides its
+    # ExecStart, so the [Install] section the receive toggle needs survives.
+    # The empty first entry resets the packaged ExecStart, as systemd wants.
+    systemd.user.services.t2-airshare = lib.mkIf (cfg.port != 0) {
+      overrideStrategy = "asDropin";
+      serviceConfig.ExecStart = [
+        ""
+        "${cfg.package}/bin/t2airshare daemon --port ${toString cfg.port}"
+      ];
+    };
 
     # Mirrors systemd/t2-quickshare-hotspot.service.
     systemd.services.t2-quickshare-hotspot = {

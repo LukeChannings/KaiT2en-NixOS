@@ -1,0 +1,62 @@
+KaiT2en-NixOS divergence: `t2airshare daemon` takes --port.
+
+The receiver binds port 0, so the kernel hands it a different ephemeral
+port on every start (40477, 34929, 34867, 35721, 44175 over one
+debugging session). The port is in the mDNS SRV record, so Quick Share
+senders always find it, but NixOS's firewall is default-deny and
+`networking.firewall.allowedTCPPorts` cannot name a port that moves.
+Fedora never needed this: the FedoraWorkstation firewalld zone leaves
+the high ports open, so upstream has nothing to declare.
+
+Worse than per-boot: the app's own receive toggle runs `systemctl --user
+enable|disable` on t2-airshare.service, so every toggle re-rolls the
+port and invalidates any rule naming the old one.
+
+`receive` already has exactly this flag (`--port`, default 0); this
+gives `daemon` the same one and threads it into service::run, which
+keeps binding 0 when it is unset. nix/modules/t2-airshare passes
+`--port` and opens that one port.
+
+Applied by apps/t2-airshare/package.nix on top of the upstream source
+(-p1 relative to apps/t2-airshare).
+
+Drop condition: remove when upstream's daemon takes a fixed port (or
+the receiver binds a well-known one), and let the module open that
+instead. Re-check every sync.
+
+--- a/src/bin/t2airshare.rs
++++ b/src/bin/t2airshare.rs
+@@ -51,6 +51,9 @@ enum Command {
+         /// Name shown on the phone, the hostname by default
+         #[arg(long)]
+         name: Option<String>,
++        /// TCP port, a free one by default
++        #[arg(long, default_value_t = 0)]
++        port: u16,
+     },
+     /// Send files to a phone in the shared WLAN. The phone has to be visible
+     /// to everyone in its Quick Share settings.
+@@ -75,7 +78,9 @@ async fn main() -> Result<()> {
+     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+     match Cli::parse().command {
+         Command::Receive { name, dir, yes, port } => receive_loop(name, dir, yes, port).await,
+-        Command::Daemon { name } => t2_airshare::service::run(&name.unwrap_or_else(default_name)).await,
++        Command::Daemon { name, port } => {
++            t2_airshare::service::run(&name.unwrap_or_else(default_name), port).await
++        }
+         Command::Send { files, to, wait, name } => {
+             send_files(files, to, wait, name.unwrap_or_else(default_name)).await
+         }
+--- a/src/service.rs
++++ b/src/service.rs
+@@ -25,8 +25,8 @@ const ASK_TIMEOUT: Duration = Duration::from_secs(60);
+ /// How long the "open" button on a finished transfer stays usable.
+ const OFFER_TIMEOUT: Duration = Duration::from_secs(300);
+ 
+-pub async fn run(name: &str) -> Result<()> {
+-    let listener = TcpListener::bind(("0.0.0.0", 0)).await.context("listen")?;
++pub async fn run(name: &str, port: u16) -> Result<()> {
++    let listener = TcpListener::bind(("0.0.0.0", port)).await.context("listen")?;
+     let port = listener.local_addr()?.port();
+     let endpoint_id = random_endpoint_id();
+     let advertisement = Advertisement::start(endpoint_id, name, port)?;

@@ -39,6 +39,19 @@ rustPlatform.buildRustPackage {
 
   src = lib.cleanSource ./.;
 
+  # Deliberate divergence from upstream, kept as a patch so `src` stays
+  # byte-identical to super/main and upstream merges can take "theirs"
+  # unconditionally. The patch header records its drop condition; re-check it
+  # every upstream sync.
+  # builtins.path content-addresses the patch by its own bytes so unrelated
+  # repo edits don't rebuild the package when consumed as a flake input.
+  patches = [
+    (builtins.path {
+      name = "t2-airshare-daemon-port.patch";
+      path = ../../patches/nixos/t2-airshare-daemon-port.patch;
+    })
+  ];
+
   cargoLock.lockFile = ./Cargo.lock;
 
   nativeBuildInputs = [
